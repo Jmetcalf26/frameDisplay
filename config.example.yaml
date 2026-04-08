@@ -1,0 +1,15 @@
+audio:
+  device: null          # null = system default; or device index/name
+  sample_rate: 44100
+  channels: 1
+  snippet_duration: 5   # seconds per recording
+  loop_interval: 10     # seconds between recognition attempts
+
+discogs:
+  consumer_key: "YOUR_KEY_HERE"
+  consumer_secret: "YOUR_SECRET_HERE"
+  enabled: true         # set false to skip Discogs enrichment
+
+server:
+  host: "0.0.0.0"
+  port: 8080

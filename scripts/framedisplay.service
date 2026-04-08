@@ -1,0 +1,14 @@
+[Unit]
+Description=Frame Display - Music Identification
+After=network.target sound.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/frameDisplay
+ExecStart=/home/pi/frameDisplay/venv/bin/python run.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,65 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    background: #000;
+    color: #e0e0e0;
+    font-family: "Inter", sans-serif;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    cursor: none;
+}
+
+#display {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 0.8s ease;
+}
+
+#display.idle {
+    opacity: 0;
+}
+
+#cover {
+    width: 85vw;
+    height: 85vw;
+    max-height: 60vh;
+    object-fit: cover;
+    border-radius: 4px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8);
+    transition: opacity 0.6s ease;
+}
+
+#info {
+    margin-top: 3vh;
+    text-align: center;
+    padding: 0 8vw;
+}
+
+#title {
+    font-size: 3.5vh;
+    font-weight: 400;
+    letter-spacing: 0.02em;
+    margin-bottom: 1vh;
+}
+
+#artist {
+    font-size: 2.5vh;
+    font-weight: 300;
+    opacity: 0.7;
+    margin-bottom: 1.5vh;
+}
+
+#meta {
+    font-size: 1.8vh;
+    font-weight: 300;
+    opacity: 0.4;
+}
