@@ -54,7 +54,8 @@ frameDisplay/
 │   ├── style.css            # Vertical layout, art-on-wall aesthetic
 │   └── app.js               # WebSocket client, DOM updates
 ├── scripts/
-│   ├── install.sh           # System + pip dependency install
+│   ├── install.sh           # Linux/Pi dependency install
+│   ├── install-mac.sh       # macOS dependency install
 │   └── framedisplay.service # systemd unit file
 └── tests/
     ├── test_models.py
@@ -66,15 +67,24 @@ frameDisplay/
 
 ## Setup
 
-```bash
-# Install dependencies and create venv
-bash scripts/install.sh
+### Raspberry Pi (Linux)
 
-# Configure API keys and mic settings
+```bash
+bash scripts/install.sh
+```
+
+### macOS (local development)
+
+```bash
+bash scripts/install-mac.sh
+```
+
+### Then
+
+```bash
 cp config.example.yaml config.yaml
 # Edit config.yaml with your Discogs credentials
 
-# Run
 source venv/bin/activate
 python run.py
 ```
