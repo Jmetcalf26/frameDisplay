@@ -4,3 +4,4 @@ sounddevice>=0.4
 soundfile>=0.12
 pyyaml>=6
 numpy>=1.24
+audioop-lts>=0.2; python_version >= "3.13"
