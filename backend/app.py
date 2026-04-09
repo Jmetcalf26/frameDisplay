@@ -103,6 +103,7 @@ class FrameDisplayApp:
     async def start(self):
         app = aiohttp.web.Application()
         app.router.add_get("/ws", self._ws_handler)
+        app.on_shutdown.append(self._close_websockets)
         if self.image_cache is not None:
             app.router.add_static(
                 ImageCache.URL_PREFIX, self.image_cache.dir, show_index=False,
@@ -125,8 +126,21 @@ class FrameDisplayApp:
             await self._listen_loop()
         finally:
             log.info("Shutting down...")
-            await runner.cleanup()
+            try:
+                await asyncio.wait_for(runner.cleanup(), timeout=5.0)
+            except asyncio.TimeoutError:
+                log.warning("runner.cleanup() timed out, forcing exit")
             await self.shutdown()
+
+    async def _close_websockets(self, _app):
+        """on_shutdown handler — close every connected WebSocket so the
+        handlers exit and runner.cleanup() doesn't block on them."""
+        for ws in list(self.ws_clients):
+            try:
+                await ws.close(code=1001, message=b"Server shutting down")
+            except Exception:
+                log.exception("Error closing websocket")
+        self.ws_clients.clear()
 
     async def shutdown(self):
         """Release external resources held by the app."""
