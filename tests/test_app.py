@@ -18,6 +18,7 @@ MINIMAL_CONFIG = {
     "server": {"host": "0.0.0.0", "port": 8080},
     "cache": {"enabled": False},
     "image_cache": {"enabled": False},
+    "acoustid": {"enabled": False},
 }
 
 CONFIG_WITH_DISCOGS = {
@@ -26,6 +27,15 @@ CONFIG_WITH_DISCOGS = {
         "enabled": True,
         "consumer_key": "test_key",
         "consumer_secret": "test_secret",
+    },
+}
+
+CONFIG_WITH_ACOUSTID = {
+    **MINIMAL_CONFIG,
+    "acoustid": {
+        "enabled": True,
+        "api_key": "test_acoustid_key",
+        "min_score": 0.5,
     },
 }
 
@@ -48,6 +58,12 @@ def app_with_cache(tmp_path):
     cache = TrackCache(path=tmp_path / "cache.json", max_bytes=10_000)
     with patch("backend.app.Recognizer"):
         return FrameDisplayApp(MINIMAL_CONFIG, cache=cache)
+
+
+@pytest.fixture
+def app_with_acoustid():
+    with patch("backend.app.Recognizer"), patch("backend.app.AcoustIDClient"):
+        return FrameDisplayApp(CONFIG_WITH_ACOUSTID)
 
 
 class TestFrameDisplayAppInit:
@@ -328,6 +344,85 @@ class TestCacheIntegration:
 
         assert app.current_track is not None
         assert app.current_track.cover_url == "http://resolved.jpg"
+
+
+class TestAcoustIDFallback:
+    def test_acoustid_disabled_by_default(self, app):
+        assert app.acoustid is None
+
+    def test_acoustid_enabled(self, app_with_acoustid):
+        assert app_with_acoustid.acoustid is not None
+
+    def test_acoustid_not_created_without_key(self):
+        config = {
+            **MINIMAL_CONFIG,
+            "acoustid": {"enabled": True, "api_key": ""},
+        }
+        with patch("backend.app.Recognizer"):
+            app = FrameDisplayApp(config)
+        assert app.acoustid is None
+
+    @pytest.mark.asyncio
+    async def test_fallback_fires_when_shazam_misses_full_recording(
+        self, app_with_acoustid,
+    ):
+        app_with_acoustid.recognizer.identify = AsyncMock(return_value=None)
+        fallback_track = TrackInfo(title="Found by AcoustID", artist="Obscure")
+        app_with_acoustid.acoustid.identify = AsyncMock(return_value=fallback_track)
+
+        await app_with_acoustid._handle_recognition(
+            "full-10s", b"audio", audio_end_time=10.0,
+        )
+
+        app_with_acoustid.acoustid.identify.assert_awaited_once_with(b"audio")
+        assert app_with_acoustid.current_track is not None
+        assert app_with_acoustid.current_track.title == "Found by AcoustID"
+
+    @pytest.mark.asyncio
+    async def test_fallback_skipped_for_windowed_label(self, app_with_acoustid):
+        app_with_acoustid.recognizer.identify = AsyncMock(return_value=None)
+        app_with_acoustid.acoustid.identify = AsyncMock()
+
+        await app_with_acoustid._handle_recognition(
+            "windowed-5s-10s", b"audio", audio_end_time=10.0,
+        )
+
+        app_with_acoustid.acoustid.identify.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_fallback_skipped_for_cumulative_label(self, app_with_acoustid):
+        app_with_acoustid.recognizer.identify = AsyncMock(return_value=None)
+        app_with_acoustid.acoustid.identify = AsyncMock()
+
+        await app_with_acoustid._handle_recognition(
+            "cumulative-10s", b"audio", audio_end_time=10.0,
+        )
+
+        app_with_acoustid.acoustid.identify.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_fallback_skipped_when_shazam_hits(self, app_with_acoustid):
+        shazam_track = TrackInfo(title="Found by Shazam", artist="Famous")
+        app_with_acoustid.recognizer.identify = AsyncMock(return_value=shazam_track)
+        app_with_acoustid.recognizer.resolve_cover = AsyncMock(return_value=None)
+        app_with_acoustid.acoustid.identify = AsyncMock()
+
+        await app_with_acoustid._handle_recognition(
+            "full-10s", b"audio", audio_end_time=10.0,
+        )
+
+        app_with_acoustid.acoustid.identify.assert_not_called()
+        assert app_with_acoustid.current_track.title == "Found by Shazam"
+
+    @pytest.mark.asyncio
+    async def test_no_crash_when_acoustid_disabled_and_shazam_misses(self, app):
+        assert app.acoustid is None
+        app.recognizer.identify = AsyncMock(return_value=None)
+
+        # Should simply return without raising
+        await app._handle_recognition("full-10s", b"audio", audio_end_time=10.0)
+
+        assert app.current_track is None
 
 
 class TestShutdown:

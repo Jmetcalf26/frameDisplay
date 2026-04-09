@@ -7,7 +7,7 @@ if ! command -v brew &> /dev/null; then
 fi
 
 echo "Installing system dependencies via Homebrew..."
-brew install portaudio libsndfile
+brew install portaudio libsndfile chromaprint
 
 echo "Creating virtual environment..."
 python3 -m venv venv

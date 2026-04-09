@@ -5,6 +5,7 @@ import time
 
 import aiohttp.web
 
+from backend.acoustid_client import AcoustIDClient
 from backend.audio import record_with_snapshots
 from backend.cache import TrackCache
 from backend.discogs import DiscogsClient
@@ -36,6 +37,16 @@ class FrameDisplayApp:
             )
         else:
             self.discogs = None
+
+        acoustid_cfg = config.get("acoustid", {})
+        if acoustid_cfg.get("enabled") and acoustid_cfg.get("api_key"):
+            self.acoustid = AcoustIDClient(
+                acoustid_cfg["api_key"],
+                min_score=acoustid_cfg.get("min_score", 0.5),
+            )
+            log.info("AcoustID fallback enabled (min_score=%.2f)", self.acoustid.min_score)
+        else:
+            self.acoustid = None
 
         if cache is not None:
             self.cache = cache
@@ -154,6 +165,20 @@ class FrameDisplayApp:
             recog_start = time.monotonic()
             track = await self.recognizer.identify(audio_bytes)
             recog_elapsed = time.monotonic() - recog_start
+
+            if (
+                track is None
+                and self.acoustid is not None
+                and label.startswith("full-")
+            ):
+                log.info("[%s] Shazam miss, trying AcoustID...", label)
+                acoustid_start = time.monotonic()
+                track = await self.acoustid.identify(audio_bytes)
+                log.info(
+                    "[%s] AcoustID done (%.1fs)",
+                    label,
+                    time.monotonic() - acoustid_start,
+                )
 
         if track is None:
             log.info("[%s] No match (%.1fs)", label, recog_elapsed)

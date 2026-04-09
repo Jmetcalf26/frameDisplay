@@ -12,6 +12,13 @@ Identifies currently playing vinyl/CD music and displays album art on a Samsung 
 │  (audio.py)  │                  │  (shazamio)   │
 └─────────────┘                   └──────┬───────┘
                                          │ TrackInfo | None
+                                         │  (None on full recording → fallback)
+                                         ▼
+                                  ┌──────────────┐
+                                  │  AcoustID     │ (optional Chromaprint fallback)
+                                  │ (fpcalc/MB)   │
+                                  └──────┬───────┘
+                                         │ TrackInfo | None
                                          ▼
                                   ┌──────────────┐
                                   │  Recency +    │ ── stale or same? → skip
@@ -64,6 +71,7 @@ frameDisplay/
 │   ├── app.py               # aiohttp server, WebSocket, listen loop
 │   ├── audio.py             # Mic recording with mid-stream snapshots
 │   ├── recognizer.py        # shazamio wrapper + Apple Music CDN upscaling
+│   ├── acoustid_client.py   # AcoustID/Chromaprint fallback recognizer
 │   ├── discogs.py           # Discogs API search + enrichment
 │   ├── cache.py             # Persistent track metadata cache (LRU)
 │   ├── image_cache.py       # Persistent album-art file cache (LRU)
@@ -117,8 +125,17 @@ See `config.example.yaml` for all options. Key settings:
 - `audio.loop_interval` — seconds to sleep between recording cycles (`0` = no sleep, default)
 - `discogs.consumer_key` / `consumer_secret` — your Discogs API credentials
 - `discogs.enabled` — set `false` to use only Shazam cover art
+- `acoustid.enabled` / `acoustid.api_key` — optional Chromaprint fallback (see below)
 - `cache.enabled` / `cache.max_bytes` — track metadata cache (default 512 KB)
 - `image_cache.enabled` / `image_cache.max_bytes` — album-art file cache (default 100 MB)
+
+### AcoustID fallback recognizer
+
+Shazam has blind spots — older catalog music, classical, jazz, certain pressings — and a different fingerprinting algorithm catches different things. AcoustID + Chromaprint runs as a fallback whenever Shazam returns no match on the full recording. It's free; register at <https://acoustid.org/api-key>.
+
+It only fires on the longest listener (where there's enough audio for Chromaprint to be confident), and only when Shazam misses, so the happy path costs nothing extra. Hits are then enriched by Discogs and cached just like Shazam hits.
+
+Requires the `fpcalc` binary, installed by `scripts/install.sh` via `libchromaprint-tools` (Linux) or `brew install chromaprint` (macOS). Set `acoustid.enabled: true` and paste your API key into `config.yaml` to turn it on.
 
 ## Testing
 
@@ -128,17 +145,18 @@ pip install -r requirements-dev.txt
 python -m pytest tests/ -v
 ```
 
-The test suite (96 tests) covers all backend components with mocked external dependencies:
+The test suite (116 tests) covers all backend components with mocked external dependencies:
 
 | Module | Coverage |
 |---|---|
 | `models.py` | `display_key` dedup logic, defaults, enum values |
 | `recognizer.py` | Shazam response parsing, Apple Music CDN upscaling, missing fields |
+| `acoustid_client.py` | AcoustID lookup parsing, score thresholding, error handling |
 | `discogs.py` | Enrichment, multi-genre/label joins, API and network errors |
 | `audio.py` | sounddevice parameters, WAV format output, mid-stream snapshots |
 | `cache.py` | LRU eviction, byte-size capping, atomic disk persistence |
 | `image_cache.py` | Per-album keying, LRU eviction, orphan manifest entries, download failures |
-| `app.py` | Init, message building, recency + dedup, recognizer lock, cache integration, shutdown, WebSocket broadcast |
+| `app.py` | Init, message building, recency + dedup, recognizer lock, AcoustID fallback gating, cache integration, shutdown, WebSocket broadcast |
 
 ## Deployment (Raspberry Pi)
 
