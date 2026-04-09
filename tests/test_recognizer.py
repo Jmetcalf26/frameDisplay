@@ -22,6 +22,14 @@ SHAZAM_RESPONSE_FULL = {
             "coverart": "http://example.com/cover.jpg",
             "coverarthq": "http://example.com/cover_hq.jpg",
         },
+        "sections": [
+            {
+                "metadata": [
+                    {"title": "Album", "text": "A Night at the Opera"},
+                    {"title": "Label", "text": "EMI"},
+                ]
+            }
+        ],
     }
 }
 
@@ -58,6 +66,15 @@ class TestRecognizerIdentify:
         assert track.title == "Bohemian Rhapsody"
         assert track.artist == "Queen"
         assert track.cover_url == "http://example.com/cover_hq.jpg"
+        assert track.album == "A Night at the Opera"
+
+    @pytest.mark.asyncio
+    async def test_no_album_metadata(self, recognizer):
+        recognizer.shazam.recognize.return_value = SHAZAM_RESPONSE_NO_IMAGES
+
+        track = await recognizer.identify(b"fake_audio")
+
+        assert track.album is None
 
     @pytest.mark.asyncio
     async def test_no_match_returns_none(self, recognizer):

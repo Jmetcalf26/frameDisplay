@@ -118,6 +118,37 @@ class TestDiscogsEnrich:
         await client.close()
 
     @pytest.mark.asyncio
+    async def test_uses_album_in_query_when_available(self, client):
+        track = TrackInfo(
+            title="Bohemian Rhapsody",
+            artist="Queen",
+            album="A Night at the Opera",
+        )
+        with aioresponses() as mocked:
+            mocked.get(DISCOGS_SEARCH_PATTERN, payload=DISCOGS_RESPONSE_FULL)
+
+            await client.enrich(track)
+
+            call = list(mocked.requests.values())[0][0]
+            q = call.kwargs["params"]["q"]
+            assert "A Night at the Opera" in q
+            assert "Bohemian Rhapsody" not in q
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_title_without_album(self, client):
+        track = TrackInfo(title="Bohemian Rhapsody", artist="Queen")
+        with aioresponses() as mocked:
+            mocked.get(DISCOGS_SEARCH_PATTERN, payload=DISCOGS_RESPONSE_FULL)
+
+            await client.enrich(track)
+
+            call = list(mocked.requests.values())[0][0]
+            q = call.kwargs["params"]["q"]
+            assert "Bohemian Rhapsody" in q
+        await client.close()
+
+    @pytest.mark.asyncio
     async def test_partial_result_no_cover(self, client, track):
         with aioresponses() as mocked:
             mocked.get(DISCOGS_SEARCH_PATTERN, payload=DISCOGS_RESPONSE_PARTIAL)

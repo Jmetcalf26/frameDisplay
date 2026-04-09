@@ -23,9 +23,14 @@ class DiscogsClient:
     async def enrich(self, track: TrackInfo) -> TrackInfo:
         """Search Discogs for the track and add label, year, genre, and hi-res art."""
         session = await self._get_session()
+        query_parts = [track.artist]
+        if track.album:
+            query_parts.append(track.album)
+        else:
+            query_parts.append(track.title)
         params = {
             **self._auth_params,
-            "q": f"{track.artist} {track.title}",
+            "q": " ".join(query_parts),
             "type": "release",
             "per_page": "1",
         }
