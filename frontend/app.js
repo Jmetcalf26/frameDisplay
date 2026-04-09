@@ -19,12 +19,6 @@ function connect() {
 }
 
 function update(data) {
-    if (data.state === "idle") {
-        display.className = "idle";
-        currentKey = null;
-        return;
-    }
-
     if (!data.track) return;
 
     const key = `${data.track.artist}:${data.track.title}`.toLowerCase();
@@ -39,8 +33,6 @@ function update(data) {
 
         const parts = [data.track.label, data.track.year, data.track.genre].filter(Boolean);
         meta.textContent = parts.join(" \u00b7 ");
-
-        display.className = "identified";
     };
     img.src = data.track.cover_url || "";
 }

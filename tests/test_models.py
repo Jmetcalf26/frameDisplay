@@ -44,8 +44,7 @@ class TestDisplayState:
     def test_enum_values(self):
         assert DisplayState.LISTENING == "listening"
         assert DisplayState.IDENTIFIED == "identified"
-        assert DisplayState.IDLE == "idle"
 
     def test_string_comparison(self):
-        assert DisplayState.IDLE == "idle"
-        assert DisplayState.IDLE != "listening"
+        assert DisplayState.LISTENING == "listening"
+        assert DisplayState.LISTENING != "identified"

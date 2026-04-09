@@ -5,7 +5,6 @@ from enum import Enum
 class DisplayState(str, Enum):
     LISTENING = "listening"
     IDENTIFIED = "identified"
-    IDLE = "idle"
 
 
 @dataclass

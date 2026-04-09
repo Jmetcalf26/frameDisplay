@@ -13,9 +13,6 @@ from backend.recognizer import Recognizer
 log = logging.getLogger("framedisplay")
 
 FRONTEND_DIR = pathlib.Path(__file__).resolve().parent.parent / "frontend"
-MISS_THRESHOLD = 3
-
-
 class FrameDisplayApp:
     def __init__(self, config: dict):
         self.config = config
@@ -32,10 +29,11 @@ class FrameDisplayApp:
 
         self.ws_clients: set[aiohttp.web.WebSocketResponse] = set()
         self.current_track: TrackInfo | None = None
-        self.state: DisplayState = DisplayState.IDLE
-        self._miss_count = 0
-        self._current_audio_end: float = 0.0  # monotonic time when current track's audio ended
-        self._current_audio_start: float = 0.0  # monotonic time when current track's audio started
+        self.state: DisplayState = DisplayState.LISTENING
+        self._current_audio_end: float = 0.0
+        self._current_audio_start: float = 0.0
+        # Serialize shazamio calls — concurrent recognize() calls can race / corrupt state
+        self._recognize_lock = asyncio.Lock()
 
     async def start(self):
         app = aiohttp.web.Application()
@@ -81,30 +79,15 @@ class FrameDisplayApp:
         self, label: str, audio_bytes: bytes, audio_end_time: float, audio_start_time: float = 0.0,
     ):
         """Recognize audio and update display if a new track is found."""
-        log.info("[%s] Sending to Shazam...", label)
-        recog_start = time.monotonic()
-        track = await self.recognizer.identify(audio_bytes)
-        recog_elapsed = time.monotonic() - recog_start
+        log.info("[%s] Waiting for recognizer lock...", label)
+        async with self._recognize_lock:
+            log.info("[%s] Sending to Shazam...", label)
+            recog_start = time.monotonic()
+            track = await self.recognizer.identify(audio_bytes)
+            recog_elapsed = time.monotonic() - recog_start
 
         if track is None:
-            self._miss_count += 1
-            log.info(
-                "[%s] No match (%.1fs, miss %d/%d)",
-                label,
-                recog_elapsed,
-                self._miss_count,
-                MISS_THRESHOLD,
-            )
-            if (
-                self._miss_count >= MISS_THRESHOLD
-                and self.state != DisplayState.IDLE
-            ):
-                log.info("[%s] Miss threshold reached, going idle", label)
-                self.state = DisplayState.IDLE
-                self.current_track = None
-                self._current_audio_end = 0.0
-                self._current_audio_start = 0.0
-                await self._broadcast(self._build_message())
+            log.info("[%s] No match (%.1fs)", label, recog_elapsed)
             return
 
         log.info(
@@ -114,8 +97,6 @@ class FrameDisplayApp:
             track.title,
             recog_elapsed,
         )
-        self._miss_count = 0
-
         if (
             self.current_track
             and track.display_key == self.current_track.display_key
@@ -175,7 +156,6 @@ class FrameDisplayApp:
         while True:
             loop_start = time.monotonic()
             try:
-                self.state = DisplayState.LISTENING
                 log.info("Recording %ds (snapshots at %s)...", total_duration, snapshot_durations)
 
                 async def on_snapshot(label, wav_bytes, audio_start_time, audio_end_time):

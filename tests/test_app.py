@@ -1,8 +1,9 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from backend.app import MISS_THRESHOLD, FrameDisplayApp
+from backend.app import FrameDisplayApp
 from backend.models import DisplayState, TrackInfo
 
 MINIMAL_CONFIG = {
@@ -46,10 +47,9 @@ class TestFrameDisplayAppInit:
     def test_discogs_enabled(self, app_with_discogs):
         assert app_with_discogs.discogs is not None
 
-    def test_initial_state_is_idle(self, app):
-        assert app.state == DisplayState.IDLE
+    def test_initial_state(self, app):
+        assert app.state == DisplayState.LISTENING
         assert app.current_track is None
-        assert app._miss_count == 0
 
     def test_discogs_not_created_without_key(self):
         config = {
@@ -62,13 +62,13 @@ class TestFrameDisplayAppInit:
 
 
 class TestBuildMessage:
-    def test_idle_message(self, app):
-        app.state = DisplayState.IDLE
+    def test_listening_message_no_track(self, app):
+        app.state = DisplayState.LISTENING
         app.current_track = None
 
         msg = app._build_message()
 
-        assert msg == {"state": "idle"}
+        assert msg == {"state": "listening"}
 
     def test_identified_message_with_track(self, app):
         app.state = DisplayState.IDENTIFIED
@@ -117,19 +117,45 @@ class TestBuildMessage:
         assert msg["track"]["cover_url"] == "http://discogs.jpg"
 
 
-class TestMissThreshold:
-    def test_miss_count_increments(self, app):
-        assert app._miss_count == 0
-        app._miss_count += 1
-        assert app._miss_count == 1
+class TestNoMatchKeepsCurrent:
+    @pytest.mark.asyncio
+    async def test_no_match_does_not_clear_track(self, app):
+        """A failed recognition should leave the current track in place."""
+        app.recognizer.identify = AsyncMock(return_value=None)
+        app.current_track = TrackInfo(title="Song", artist="Artist")
+        app.state = DisplayState.IDENTIFIED
 
-    def test_miss_threshold_value(self):
-        assert MISS_THRESHOLD == 3
+        await app._handle_recognition("full-10s", b"audio", audio_end_time=110.0)
 
-    def test_miss_count_resets_on_track(self, app):
-        app._miss_count = 5
-        app._miss_count = 0
-        assert app._miss_count == 0
+        assert app.current_track is not None
+        assert app.current_track.title == "Song"
+        assert app.state == DisplayState.IDENTIFIED
+
+
+class TestRecognizerLock:
+    @pytest.mark.asyncio
+    async def test_concurrent_recognitions_serialized(self, app):
+        """Two simultaneous _handle_recognition calls must not call identify in parallel."""
+        in_flight = 0
+        max_in_flight = 0
+
+        async def slow_identify(_audio):
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            return None
+
+        app.recognizer.identify = slow_identify
+
+        await asyncio.gather(
+            app._handle_recognition("a", b"x", audio_end_time=1.0),
+            app._handle_recognition("b", b"y", audio_end_time=2.0),
+            app._handle_recognition("c", b"z", audio_end_time=3.0),
+        )
+
+        assert max_in_flight == 1
 
 
 class TestDeduplication:
@@ -177,20 +203,6 @@ class TestRecencyPriority:
 
         assert app.current_track.title == "New Song"
         assert app._current_audio_end == 100.0
-
-    @pytest.mark.asyncio
-    async def test_audio_end_resets_on_idle(self, app):
-        """Going idle should reset the audio end timestamp."""
-        app.recognizer.identify = AsyncMock(return_value=None)
-        app.state = DisplayState.IDENTIFIED
-        app.current_track = TrackInfo(title="Song", artist="Artist")
-        app._current_audio_end = 100.0
-        app._miss_count = MISS_THRESHOLD - 1
-
-        await app._handle_recognition("full-10s", b"audio", audio_end_time=110.0)
-
-        assert app.state == DisplayState.IDLE
-        assert app._current_audio_end == 0.0
 
     @pytest.mark.asyncio
     async def test_cumulative_rejected_when_windowed_already_matched(self, app):
