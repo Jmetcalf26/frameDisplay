@@ -16,6 +16,8 @@ MINIMAL_CONFIG = {
     },
     "discogs": {"enabled": False},
     "server": {"host": "0.0.0.0", "port": 8080},
+    "cache": {"enabled": False},
+    "image_cache": {"enabled": False},
 }
 
 CONFIG_WITH_DISCOGS = {
@@ -38,6 +40,14 @@ def app():
 def app_with_discogs():
     with patch("backend.app.Recognizer"), patch("backend.app.DiscogsClient"):
         return FrameDisplayApp(CONFIG_WITH_DISCOGS)
+
+
+@pytest.fixture
+def app_with_cache(tmp_path):
+    from backend.cache import TrackCache
+    cache = TrackCache(path=tmp_path / "cache.json", max_bytes=10_000)
+    with patch("backend.app.Recognizer"):
+        return FrameDisplayApp(MINIMAL_CONFIG, cache=cache)
 
 
 class TestFrameDisplayAppInit:
@@ -257,6 +267,67 @@ class TestRecencyPriority:
         )
 
         assert app.current_track.title == "New Song"
+
+
+class TestCacheIntegration:
+    @pytest.mark.asyncio
+    async def test_cache_hit_skips_resolve_cover(self, app_with_cache):
+        """A cached track should bypass resolve_cover entirely."""
+        cached_track = TrackInfo(
+            title="Song",
+            artist="Artist",
+            cover_url="http://cached.jpg",
+            year="2020",
+        )
+        app_with_cache.cache.put("artist:song", cached_track)
+
+        # Shazam returns a fresh track with a raw URL
+        fresh_track = TrackInfo(
+            title="Song", artist="Artist", cover_url="http://raw.jpg",
+        )
+        app_with_cache.recognizer.identify = AsyncMock(return_value=fresh_track)
+        app_with_cache.recognizer.resolve_cover = AsyncMock()
+
+        await app_with_cache._handle_recognition("test", b"audio", audio_end_time=10.0)
+
+        # resolve_cover should NOT have been called
+        app_with_cache.recognizer.resolve_cover.assert_not_called()
+        assert app_with_cache.current_track.cover_url == "http://cached.jpg"
+        assert app_with_cache.current_track.year == "2020"
+
+    @pytest.mark.asyncio
+    async def test_cache_miss_resolves_and_stores(self, app_with_cache):
+        """A cache miss should call resolve_cover and store the result."""
+        fresh_track = TrackInfo(
+            title="NewSong", artist="NewArtist", cover_url="http://raw.jpg",
+        )
+        app_with_cache.recognizer.identify = AsyncMock(return_value=fresh_track)
+        app_with_cache.recognizer.resolve_cover = AsyncMock(
+            return_value="http://resolved.jpg",
+        )
+
+        await app_with_cache._handle_recognition("test", b"audio", audio_end_time=10.0)
+
+        app_with_cache.recognizer.resolve_cover.assert_called_once_with("http://raw.jpg")
+        # Track should now be cached
+        assert "newartist:newsong" in app_with_cache.cache
+        cached = app_with_cache.cache.get("newartist:newsong")
+        assert cached.cover_url == "http://resolved.jpg"
+
+    @pytest.mark.asyncio
+    async def test_cache_disabled_works(self, app):
+        """When cache is disabled, recognition should still work."""
+        assert app.cache is None
+        fresh_track = TrackInfo(
+            title="Song", artist="Artist", cover_url="http://raw.jpg",
+        )
+        app.recognizer.identify = AsyncMock(return_value=fresh_track)
+        app.recognizer.resolve_cover = AsyncMock(return_value="http://resolved.jpg")
+
+        await app._handle_recognition("test", b"audio", audio_end_time=10.0)
+
+        assert app.current_track is not None
+        assert app.current_track.cover_url == "http://resolved.jpg"
 
 
 class TestBroadcast:

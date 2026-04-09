@@ -15,3 +15,13 @@ discogs:
 server:
   host: "0.0.0.0"
   port: 8080
+
+cache:
+  enabled: true
+  path: "cache/tracks.json"   # relative to project root, or absolute
+  max_bytes: 524288           # 512 KB; oldest entries evicted when exceeded
+
+image_cache:
+  enabled: true
+  dir: "cache/images"         # relative to project root, or absolute
+  max_bytes: 104857600        # 100 MB; oldest album images evicted when exceeded

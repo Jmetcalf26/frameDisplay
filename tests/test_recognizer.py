@@ -61,17 +61,13 @@ class TestRecognizerIdentify:
     async def test_successful_identification(self, recognizer):
         recognizer.shazam.recognize.return_value = SHAZAM_RESPONSE_FULL
 
-        with aioresponses() as mocked:
-            mocked.head(
-                "https://is1-ssl.mzstatic.com/image/thumb/Music/v4/test/3000x3000cc.jpg",
-                status=200,
-            )
-            track = await recognizer.identify(b"fake_audio")
+        track = await recognizer.identify(b"fake_audio")
 
         assert track is not None
         assert track.title == "Bohemian Rhapsody"
         assert track.artist == "Queen"
-        assert "3000x3000cc" in track.cover_url
+        # identify() returns the raw Shazam URL — caller resolves it
+        assert track.cover_url == SHAZAM_RESPONSE_FULL["track"]["images"]["coverarthq"]
         assert track.album == "A Night at the Opera"
 
     @pytest.mark.asyncio

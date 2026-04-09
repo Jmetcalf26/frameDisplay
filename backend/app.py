@@ -6,15 +6,25 @@ import time
 import aiohttp.web
 
 from backend.audio import record_with_snapshots
+from backend.cache import TrackCache
 from backend.discogs import DiscogsClient
+from backend.image_cache import ImageCache
 from backend.models import DisplayState, TrackInfo
 from backend.recognizer import Recognizer
 
 log = logging.getLogger("framedisplay")
 
 FRONTEND_DIR = pathlib.Path(__file__).resolve().parent.parent / "frontend"
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
 class FrameDisplayApp:
-    def __init__(self, config: dict):
+    def __init__(
+        self,
+        config: dict,
+        cache: TrackCache | None = None,
+        image_cache: ImageCache | None = None,
+    ):
         self.config = config
         self.recognizer = Recognizer()
 
@@ -27,6 +37,50 @@ class FrameDisplayApp:
         else:
             self.discogs = None
 
+        if cache is not None:
+            self.cache = cache
+        else:
+            cache_cfg = config.get("cache", {})
+            if cache_cfg.get("enabled", True):
+                cache_path = pathlib.Path(cache_cfg.get("path", "cache/tracks.json"))
+                if not cache_path.is_absolute():
+                    cache_path = PROJECT_ROOT / cache_path
+                self.cache = TrackCache(
+                    path=cache_path,
+                    max_bytes=cache_cfg.get("max_bytes", 524288),  # 512 KB default
+                )
+                log.info(
+                    "Track cache: %s (%d entries, %d / %d bytes)",
+                    cache_path,
+                    len(self.cache),
+                    self.cache.size_bytes(),
+                    self.cache.max_bytes,
+                )
+            else:
+                self.cache = None
+
+        if image_cache is not None:
+            self.image_cache = image_cache
+        else:
+            img_cfg = config.get("image_cache", {})
+            if img_cfg.get("enabled", True):
+                img_dir = pathlib.Path(img_cfg.get("dir", "cache/images"))
+                if not img_dir.is_absolute():
+                    img_dir = PROJECT_ROOT / img_dir
+                self.image_cache = ImageCache(
+                    dir=img_dir,
+                    max_bytes=img_cfg.get("max_bytes", 100 * 1024 * 1024),  # 100 MB
+                )
+                log.info(
+                    "Image cache: %s (%d entries, %d / %d bytes)",
+                    img_dir,
+                    len(self.image_cache),
+                    self.image_cache.total_bytes(),
+                    self.image_cache.max_bytes,
+                )
+            else:
+                self.image_cache = None
+
         self.ws_clients: set[aiohttp.web.WebSocketResponse] = set()
         self.current_track: TrackInfo | None = None
         self.state: DisplayState = DisplayState.LISTENING
@@ -38,6 +92,10 @@ class FrameDisplayApp:
     async def start(self):
         app = aiohttp.web.Application()
         app.router.add_get("/ws", self._ws_handler)
+        if self.image_cache is not None:
+            app.router.add_static(
+                ImageCache.URL_PREFIX, self.image_cache.dir, show_index=False,
+            )
         app.router.add_static("/", FRONTEND_DIR, show_index=True)
 
         runner = aiohttp.web.AppRunner(app)
@@ -121,11 +179,41 @@ class FrameDisplayApp:
             )
             return
 
-        if self.discogs:
-            log.info("[%s] Enriching via Discogs...", label)
-            discogs_start = time.monotonic()
-            track = await self.discogs.enrich(track)
-            log.info("[%s] Discogs done (%.1fs)", label, time.monotonic() - discogs_start)
+        cached = self.cache.get(track.display_key) if self.cache is not None else None
+        if cached is not None:
+            log.info("[%s] Track cache hit for %s", label, track.display_key)
+            track = cached
+        else:
+            raw_cover = track.cover_url
+            if raw_cover:
+                cover_start = time.monotonic()
+                track.cover_url = await self.recognizer.resolve_cover(raw_cover)
+                log.info(
+                    "[%s] Cover resolved (%.1fs)", label, time.monotonic() - cover_start,
+                )
+
+            if self.discogs:
+                log.info("[%s] Enriching via Discogs...", label)
+                discogs_start = time.monotonic()
+                track = await self.discogs.enrich(track)
+                log.info("[%s] Discogs done (%.1fs)", label, time.monotonic() - discogs_start)
+
+            if self.cache is not None:
+                self.cache.put(track.display_key, track)
+                log.info(
+                    "[%s] Cached %s (track cache: %d entries, %d bytes)",
+                    label,
+                    track.display_key,
+                    len(self.cache),
+                    self.cache.size_bytes(),
+                )
+
+        # Make sure the album image is in the local image cache (downloads on miss).
+        # Done in both branches so cache hits still keep their album image fresh.
+        if self.image_cache is not None and track.album:
+            source = track.cover_url or track.cover_url_hires
+            if source and not source.startswith(ImageCache.URL_PREFIX):
+                await self.image_cache.ensure(track.artist, track.album, source)
 
         self.current_track = track
         self._current_audio_end = audio_end_time
@@ -192,11 +280,17 @@ class FrameDisplayApp:
         msg: dict = {"state": self.state.value}
         if self.current_track:
             t = self.current_track
+            cover = t.cover_url or t.cover_url_hires
+            # Prefer locally cached image when available
+            if t.album and self.image_cache is not None:
+                local = self.image_cache.local_url_if_present(t.artist, t.album)
+                if local:
+                    cover = local
             msg["track"] = {
                 "title": t.title,
                 "artist": t.artist,
                 "album": t.album,
-                "cover_url": t.cover_url or t.cover_url_hires,
+                "cover_url": cover,
                 "year": t.year,
                 "genre": t.genre,
                 "label": t.label,

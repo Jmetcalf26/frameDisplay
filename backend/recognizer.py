@@ -16,7 +16,11 @@ class Recognizer:
         self.shazam = Shazam()
 
     async def identify(self, audio_bytes: bytes) -> TrackInfo | None:
-        """Identify a track from raw WAV bytes. Returns None if no match."""
+        """Identify a track from raw WAV bytes. Returns None if no match.
+
+        Returns TrackInfo with the raw Shazam cover URL — the caller is
+        responsible for resolving it via resolve_cover() if desired.
+        """
         result = await self.shazam.recognize(audio_bytes)
 
         track_data = result.get("track")
@@ -26,14 +30,11 @@ class Recognizer:
         album = self._extract_album(track_data)
         log.info("Shazam metadata - album: %s", album)
 
-        raw_cover = self._extract_cover_url(track_data)
-        cover_url = await self.resolve_cover(raw_cover) if raw_cover else None
-
         return TrackInfo(
             title=track_data.get("title", "Unknown"),
             artist=track_data.get("subtitle", "Unknown"),
             album=album,
-            cover_url=cover_url,
+            cover_url=self._extract_cover_url(track_data),
         )
 
     @staticmethod
