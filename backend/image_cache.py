@@ -26,6 +26,12 @@ class ImageCache:
         self.manifest_path = self.dir / "manifest.json"
         self._entries: OrderedDict[str, dict] = OrderedDict()
         self._lock = asyncio.Lock()
+        # Ensure the directory exists up front — aiohttp's add_static
+        # validates the path on mount and raises ValueError if it's missing.
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            log.warning("Failed to create image cache dir %s: %s", self.dir, e)
         self._load()
 
     @staticmethod
