@@ -1,6 +1,11 @@
+import json
+import logging
+
 import aiohttp
 
 from backend.models import TrackInfo
+
+log = logging.getLogger("framedisplay")
 
 
 class DiscogsClient:
@@ -47,9 +52,11 @@ class DiscogsClient:
 
         results = data.get("results", [])
         if not results:
+            log.info("Discogs: no results for query")
             return track
 
         release = results[0]
+        log.info("Discogs raw result:\n%s", json.dumps(release, indent=2))
         track.year = release.get("year")
         track.genre = ", ".join(release.get("genre", []))
         track.label = ", ".join(release.get("label", []))
