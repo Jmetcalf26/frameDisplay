@@ -1,4 +1,5 @@
 import logging
+import re
 
 from shazamio import Shazam
 
@@ -40,4 +41,12 @@ class Recognizer:
     @staticmethod
     def _extract_cover(track_data: dict) -> str | None:
         images = track_data.get("images", {})
-        return images.get("coverarthq") or images.get("coverart")
+        url = images.get("coverarthq") or images.get("coverart")
+        if url:
+            url = _upscale_apple_music_url(url)
+        return url
+
+
+def _upscale_apple_music_url(url: str, size: int = 3000) -> str:
+    """Rewrite Apple Music CDN URLs to request a higher resolution image."""
+    return re.sub(r"\d+x\d+bb", f"{size}x{size}bb", url)

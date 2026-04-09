@@ -88,33 +88,33 @@ class TestBuildMessage:
         assert msg["state"] == "identified"
         assert msg["track"]["title"] == "Blue Train"
         assert msg["track"]["artist"] == "John Coltrane"
-        assert msg["track"]["cover_url"] == "http://example.com/cover_hires.jpg"
+        assert msg["track"]["cover_url"] == "http://example.com/cover.jpg"
         assert msg["track"]["year"] == "1957"
 
-    def test_hires_cover_preferred_over_standard(self, app):
+    def test_apple_music_cover_preferred_over_discogs(self, app):
         app.state = DisplayState.IDENTIFIED
         app.current_track = TrackInfo(
             title="Test",
             artist="Test",
-            cover_url="http://lo.jpg",
-            cover_url_hires="http://hi.jpg",
+            cover_url="http://apple.jpg",
+            cover_url_hires="http://discogs.jpg",
         )
 
         msg = app._build_message()
 
-        assert msg["track"]["cover_url"] == "http://hi.jpg"
+        assert msg["track"]["cover_url"] == "http://apple.jpg"
 
-    def test_standard_cover_when_no_hires(self, app):
+    def test_discogs_cover_when_no_apple(self, app):
         app.state = DisplayState.IDENTIFIED
         app.current_track = TrackInfo(
             title="Test",
             artist="Test",
-            cover_url="http://lo.jpg",
+            cover_url_hires="http://discogs.jpg",
         )
 
         msg = app._build_message()
 
-        assert msg["track"]["cover_url"] == "http://lo.jpg"
+        assert msg["track"]["cover_url"] == "http://discogs.jpg"
 
 
 class TestMissThreshold:

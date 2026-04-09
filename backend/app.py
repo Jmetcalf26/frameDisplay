@@ -188,7 +188,7 @@ class FrameDisplayApp:
                 "title": t.title,
                 "artist": t.artist,
                 "album": t.album,
-                "cover_url": t.cover_url_hires or t.cover_url,
+                "cover_url": t.cover_url or t.cover_url_hires,
                 "year": t.year,
                 "genre": t.genre,
                 "label": t.label,
