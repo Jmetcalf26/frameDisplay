@@ -20,6 +20,10 @@ class TrackCache:
         self.path = pathlib.Path(path)
         self.max_bytes = max_bytes
         self._entries: OrderedDict[str, dict] = OrderedDict()
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            log.warning("Failed to create track cache dir %s: %s", self.path.parent, e)
         self._load()
 
     def get(self, key: str) -> TrackInfo | None:
