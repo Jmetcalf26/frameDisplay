@@ -45,6 +45,7 @@ async def record_with_snapshots(
     device=None,
     channels: int = 1,
     on_snapshot=None,
+    record_start_time: float = 0.0,
 ) -> bytes:
     """Record audio, firing snapshots at specified times while continuing to record.
 
@@ -58,8 +59,10 @@ async def record_with_snapshots(
         sample_rate: Sample rate in Hz.
         device: Audio device index or None for default.
         channels: Number of audio channels.
-        on_snapshot: async callable(label, wav_bytes) called for each snapshot.
+        on_snapshot: async callable(label, wav_bytes, audio_end_time) called for each snapshot.
                      label is e.g. "cumulative-5s" or "windowed-5s-10s".
+                     audio_end_time is the monotonic time when the snapshot's audio ended.
+        record_start_time: monotonic timestamp of when recording started (for audio_end_time calc).
 
     Returns:
         WAV bytes of the full recording.
@@ -115,14 +118,16 @@ async def record_with_snapshots(
                 prev_snapshot_sample = snap_sample_end
 
                 if on_snapshot:
+                    audio_end = record_start_time + snap_duration
                     asyncio.run_coroutine_threadsafe(
-                        on_snapshot(f"cumulative-{snap_duration:.0f}s", cumulative_wav),
+                        on_snapshot(f"cumulative-{snap_duration:.0f}s", cumulative_wav, audio_end),
                         loop,
                     )
                     asyncio.run_coroutine_threadsafe(
                         on_snapshot(
                             f"windowed-{prev_snap_sec:.0f}s-{snap_duration:.0f}s",
                             windowed_wav,
+                            audio_end,
                         ),
                         loop,
                     )

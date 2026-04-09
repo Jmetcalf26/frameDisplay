@@ -148,6 +148,64 @@ class TestDeduplication:
         assert track_b.display_key != app.current_track.display_key
 
 
+class TestRecencyPriority:
+    @pytest.mark.asyncio
+    async def test_stale_result_rejected(self, app):
+        """A recognition result whose audio ended before the current track's should be rejected."""
+        app.recognizer.identify = AsyncMock(
+            return_value=TrackInfo(title="Old Song", artist="Old Artist")
+        )
+        app.current_track = TrackInfo(title="Current Song", artist="Current Artist")
+        app.state = DisplayState.IDENTIFIED
+        app._current_audio_end = 100.0
+
+        await app._handle_recognition("cumulative-5s", b"audio", audio_end_time=95.0)
+
+        # Should NOT have updated the track
+        assert app.current_track.title == "Current Song"
+
+    @pytest.mark.asyncio
+    async def test_newer_result_accepted(self, app):
+        """A recognition result with newer audio should update the display."""
+        new_track = TrackInfo(title="New Song", artist="New Artist")
+        app.recognizer.identify = AsyncMock(return_value=new_track)
+        app.current_track = TrackInfo(title="Old Song", artist="Old Artist")
+        app.state = DisplayState.IDENTIFIED
+        app._current_audio_end = 90.0
+
+        await app._handle_recognition("windowed-5s-10s", b"audio", audio_end_time=100.0)
+
+        assert app.current_track.title == "New Song"
+        assert app._current_audio_end == 100.0
+
+    @pytest.mark.asyncio
+    async def test_audio_end_resets_on_idle(self, app):
+        """Going idle should reset the audio end timestamp."""
+        app.recognizer.identify = AsyncMock(return_value=None)
+        app.state = DisplayState.IDENTIFIED
+        app.current_track = TrackInfo(title="Song", artist="Artist")
+        app._current_audio_end = 100.0
+        app._miss_count = MISS_THRESHOLD - 1
+
+        await app._handle_recognition("full-10s", b"audio", audio_end_time=110.0)
+
+        assert app.state == DisplayState.IDLE
+        assert app._current_audio_end == 0.0
+
+    @pytest.mark.asyncio
+    async def test_equal_audio_end_accepted(self, app):
+        """A result with equal audio end time should be accepted (same snapshot point)."""
+        new_track = TrackInfo(title="New Song", artist="New Artist")
+        app.recognizer.identify = AsyncMock(return_value=new_track)
+        app.current_track = TrackInfo(title="Old Song", artist="Old Artist")
+        app.state = DisplayState.IDENTIFIED
+        app._current_audio_end = 100.0
+
+        await app._handle_recognition("cumulative-10s", b"audio", audio_end_time=100.0)
+
+        assert app.current_track.title == "New Song"
+
+
 class TestBroadcast:
     @pytest.mark.asyncio
     async def test_broadcast_sends_to_all_clients(self, app):
