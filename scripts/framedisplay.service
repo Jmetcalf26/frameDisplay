@@ -8,7 +8,11 @@ User=pi
 WorkingDirectory=/home/pi/frameDisplay
 ExecStart=/home/pi/frameDisplay/venv/bin/python run.py
 Restart=always
-RestartSec=5
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+MemoryMax=512M
 
 [Install]
 WantedBy=multi-user.target
