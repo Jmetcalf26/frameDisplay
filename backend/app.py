@@ -5,7 +5,7 @@ import time
 
 import aiohttp.web
 
-from backend.audio import record_snippet
+from backend.audio import record_with_snapshots
 from backend.discogs import DiscogsClient
 from backend.models import DisplayState, TrackInfo
 from backend.recognizer import Recognizer
@@ -34,8 +34,6 @@ class FrameDisplayApp:
         self.current_track: TrackInfo | None = None
         self.state: DisplayState = DisplayState.IDLE
         self._miss_count = 0
-        self._lock = asyncio.Lock()
-        self._mic_lock = asyncio.Lock()
 
     async def start(self):
         app = aiohttp.web.Application()
@@ -54,31 +52,7 @@ class FrameDisplayApp:
         await site.start()
         log.info("Serving on http://%s:%s", srv_cfg.get("host"), srv_cfg.get("port"))
 
-        audio_cfg = self.config.get("audio", {})
-        listeners = audio_cfg.get("listeners", [
-            {"snippet_duration": 5, "loop_interval": 10},
-        ])
-
-        tasks = []
-        for i, listener_cfg in enumerate(listeners):
-            duration = listener_cfg.get("snippet_duration", 5)
-            interval = listener_cfg.get("loop_interval", 10)
-            label = f"listener-{duration}s"
-            tasks.append(
-                asyncio.create_task(
-                    self._listen_loop(
-                        label=label,
-                        duration=duration,
-                        sample_rate=audio_cfg.get("sample_rate", 44100),
-                        device=audio_cfg.get("device"),
-                        channels=audio_cfg.get("channels", 1),
-                        interval=interval,
-                    )
-                )
-            )
-            log.info("Started %s (interval=%ds)", label, interval)
-
-        await asyncio.gather(*tasks)
+        await self._listen_loop()
 
     async def _ws_handler(self, request):
         ws = aiohttp.web.WebSocketResponse()
@@ -101,112 +75,110 @@ class FrameDisplayApp:
                 dead.add(ws)
         self.ws_clients -= dead
 
-    async def _listen_loop(
-        self,
-        label: str,
-        duration: float,
-        sample_rate: int,
-        device,
-        channels: int,
-        interval: int,
-    ):
+    async def _handle_recognition(self, label: str, audio_bytes: bytes):
+        """Recognize audio and update display if a new track is found."""
+        log.info("[%s] Sending to Shazam...", label)
+        recog_start = time.monotonic()
+        track = await self.recognizer.identify(audio_bytes)
+        recog_elapsed = time.monotonic() - recog_start
+
+        if track is None:
+            self._miss_count += 1
+            log.info(
+                "[%s] No match (%.1fs, miss %d/%d)",
+                label,
+                recog_elapsed,
+                self._miss_count,
+                MISS_THRESHOLD,
+            )
+            if (
+                self._miss_count >= MISS_THRESHOLD
+                and self.state != DisplayState.IDLE
+            ):
+                log.info("[%s] Miss threshold reached, going idle", label)
+                self.state = DisplayState.IDLE
+                self.current_track = None
+                await self._broadcast(self._build_message())
+            return
+
+        log.info(
+            "[%s] Recognized: %s - %s (%.1fs)",
+            label,
+            track.artist,
+            track.title,
+            recog_elapsed,
+        )
+        self._miss_count = 0
+
+        if (
+            self.current_track
+            and track.display_key == self.current_track.display_key
+        ):
+            log.info("[%s] Same track still playing, skipping update", label)
+            return
+
+        if self.discogs:
+            log.info("[%s] Enriching via Discogs...", label)
+            discogs_start = time.monotonic()
+            track = await self.discogs.enrich(track)
+            log.info("[%s] Discogs done (%.1fs)", label, time.monotonic() - discogs_start)
+
+        self.current_track = track
+        self.state = DisplayState.IDENTIFIED
+        log.info("[%s] Now playing: %s - %s", label, track.artist, track.title)
+        await self._broadcast(self._build_message())
+
+    async def _listen_loop(self):
+        audio_cfg = self.config.get("audio", {})
+        sample_rate = audio_cfg.get("sample_rate", 44100)
+        device = audio_cfg.get("device")
+        channels = audio_cfg.get("channels", 1)
+        interval = audio_cfg.get("loop_interval", 10)
+
+        listeners = audio_cfg.get("listeners", [{"snippet_duration": 5}])
+        durations = sorted(l.get("snippet_duration", 5) for l in listeners)
+        total_duration = max(durations)
+        # Snapshots are all durations except the longest (which is the full recording)
+        snapshot_durations = [d for d in durations if d < total_duration]
+
+        log.info(
+            "Listen loop: record %ds, snapshots at %s",
+            total_duration,
+            snapshot_durations or "none",
+        )
+
         while True:
             loop_start = time.monotonic()
             try:
-                log.info("[%s] Waiting for mic...", label)
-                async with self._mic_lock:
-                    log.info("[%s] Recording %ss audio snippet...", label, duration)
-                    rec_start = time.monotonic()
-                    audio_bytes = await record_snippet(
-                        duration=duration,
-                        sample_rate=sample_rate,
-                        device=device,
-                        channels=channels,
-                    )
-                    rec_elapsed = time.monotonic() - rec_start
-                    log.info(
-                        "[%s] Recording done (%.1fs, %d bytes)",
-                        label,
-                        rec_elapsed,
-                        len(audio_bytes),
-                    )
+                self.state = DisplayState.LISTENING
+                log.info("Recording %ds (snapshots at %s)...", total_duration, snapshot_durations)
 
-                log.info("[%s] Sending to Shazam for recognition...", label)
-                recog_start = time.monotonic()
-                track = await self.recognizer.identify(audio_bytes)
-                recog_elapsed = time.monotonic() - recog_start
+                async def on_snapshot(snap_duration, wav_bytes):
+                    label = f"snap-{snap_duration:.0f}s"
+                    log.info("[%s] Snapshot ready (%d bytes)", label, len(wav_bytes))
+                    await self._handle_recognition(label, wav_bytes)
 
-                async with self._lock:
-                    if track is None:
-                        self._miss_count += 1
-                        log.info(
-                            "[%s] No match (%.1fs, miss %d/%d)",
-                            label,
-                            recog_elapsed,
-                            self._miss_count,
-                            MISS_THRESHOLD,
-                        )
-                        if (
-                            self._miss_count >= MISS_THRESHOLD
-                            and self.state != DisplayState.IDLE
-                        ):
-                            log.info("[%s] Miss threshold reached, going idle", label)
-                            self.state = DisplayState.IDLE
-                            self.current_track = None
-                            await self._broadcast(self._build_message())
-                        if interval:
-                            await asyncio.sleep(interval)
-                        continue
+                full_wav = await record_with_snapshots(
+                    total_duration=total_duration,
+                    snapshot_at=snapshot_durations,
+                    sample_rate=sample_rate,
+                    device=device,
+                    channels=channels,
+                    on_snapshot=on_snapshot,
+                )
 
-                    log.info(
-                        "[%s] Recognized: %s - %s (%.1fs)",
-                        label,
-                        track.artist,
-                        track.title,
-                        recog_elapsed,
-                    )
-                    self._miss_count = 0
-
-                    # Same song still playing
-                    if (
-                        self.current_track
-                        and track.display_key == self.current_track.display_key
-                    ):
-                        log.info("[%s] Same track still playing, skipping update", label)
-                        if interval:
-                            await asyncio.sleep(interval)
-                        continue
-
-                    # Enrich via Discogs
-                    if self.discogs:
-                        log.info("[%s] Enriching via Discogs...", label)
-                        discogs_start = time.monotonic()
-                        track = await self.discogs.enrich(track)
-                        log.info(
-                            "[%s] Discogs done (%.1fs)",
-                            label,
-                            time.monotonic() - discogs_start,
-                        )
-
-                    self.current_track = track
-                    self.state = DisplayState.IDENTIFIED
-                    log.info("[%s] Now playing: %s - %s", label, track.artist, track.title)
-                    await self._broadcast(self._build_message())
+                log.info("Full recording ready (%d bytes)", len(full_wav))
+                await self._handle_recognition(f"full-{total_duration:.0f}s", full_wav)
 
             except Exception:
-                log.exception("[%s] Error in listen loop", label)
+                log.exception("Error in listen loop")
 
             loop_elapsed = time.monotonic() - loop_start
             if interval:
-                log.info(
-                    "[%s] Loop cycle took %.1fs, sleeping %ds",
-                    label,
-                    loop_elapsed,
-                    interval,
-                )
+                log.info("Loop cycle took %.1fs, sleeping %ds", loop_elapsed, interval)
                 await asyncio.sleep(interval)
             else:
-                log.info("[%s] Loop cycle took %.1fs, no sleep", label, loop_elapsed)
+                log.info("Loop cycle took %.1fs, no sleep", loop_elapsed)
 
     def _build_message(self) -> dict:
         msg: dict = {"state": self.state.value}
