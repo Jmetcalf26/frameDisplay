@@ -1,4 +1,3 @@
-import json
 import logging
 
 import aiohttp
@@ -56,7 +55,6 @@ class DiscogsClient:
             return track
 
         release = results[0]
-        log.info("Discogs search result:\n%s", json.dumps(release, indent=2))
         track.year = release.get("year")
         track.genre = ", ".join(release.get("genre", []))
         track.label = ", ".join(release.get("label", []))

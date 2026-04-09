@@ -49,4 +49,9 @@ class Recognizer:
 
 def _upscale_apple_music_url(url: str, size: int = 3000) -> str:
     """Rewrite Apple Music CDN URLs to request a higher resolution image."""
-    return re.sub(r"\d+x\d+bb", f"{size}x{size}bb", url)
+    result = re.sub(r"\d+x\d+bb", f"{size}x{size}bb", url)
+    if result != url:
+        log.info("Apple Music upscale: %s -> %s", url, result)
+    else:
+        log.info("Apple Music upscale: no match in URL %s", url)
+    return result
