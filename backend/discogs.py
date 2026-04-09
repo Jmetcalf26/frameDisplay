@@ -56,14 +56,50 @@ class DiscogsClient:
             return track
 
         release = results[0]
-        log.info("Discogs raw result:\n%s", json.dumps(release, indent=2))
+        log.info("Discogs search result:\n%s", json.dumps(release, indent=2))
         track.year = release.get("year")
         track.genre = ", ".join(release.get("genre", []))
         track.label = ", ".join(release.get("label", []))
-        if release.get("cover_image"):
+
+        # Fetch full release details for high-res artwork
+        release_id = release.get("id")
+        if release_id:
+            hires_url = await self._get_primary_image(session, release_id)
+            if hires_url:
+                track.cover_url_hires = hires_url
+                log.info("Discogs hi-res image: %s", hires_url)
+
+        # Fall back to search result cover_image
+        if not track.cover_url_hires and release.get("cover_image"):
             track.cover_url_hires = release["cover_image"]
 
         return track
+
+    async def _get_primary_image(self, session, release_id: int) -> str | None:
+        """Fetch the primary full-res image from a release's detail endpoint."""
+        try:
+            async with session.get(
+                f"{self.BASE_URL}/releases/{release_id}",
+                params=self._auth_params,
+            ) as resp:
+                if resp.status != 200:
+                    log.info("Discogs release fetch failed: %d", resp.status)
+                    return None
+                data = await resp.json()
+        except aiohttp.ClientError:
+            return None
+
+        images = data.get("images", [])
+        if not images:
+            return None
+
+        # Prefer the primary image, fall back to first available
+        for img in images:
+            if img.get("type") == "primary":
+                log.info("Discogs primary image: %dx%d", img.get("width", 0), img.get("height", 0))
+                return img.get("uri")
+
+        return images[0].get("uri")
 
     async def close(self):
         if self._session and not self._session.closed:
