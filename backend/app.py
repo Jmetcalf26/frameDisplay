@@ -35,6 +35,7 @@ class FrameDisplayApp:
         self.state: DisplayState = DisplayState.IDLE
         self._miss_count = 0
         self._lock = asyncio.Lock()
+        self._mic_lock = asyncio.Lock()
 
     async def start(self):
         app = aiohttp.web.Application()
@@ -112,21 +113,23 @@ class FrameDisplayApp:
         while True:
             loop_start = time.monotonic()
             try:
-                log.info("[%s] Recording %ss audio snippet...", label, duration)
-                rec_start = time.monotonic()
-                audio_bytes = await record_snippet(
-                    duration=duration,
-                    sample_rate=sample_rate,
-                    device=device,
-                    channels=channels,
-                )
-                rec_elapsed = time.monotonic() - rec_start
-                log.info(
-                    "[%s] Recording done (%.1fs, %d bytes)",
-                    label,
-                    rec_elapsed,
-                    len(audio_bytes),
-                )
+                log.info("[%s] Waiting for mic...", label)
+                async with self._mic_lock:
+                    log.info("[%s] Recording %ss audio snippet...", label, duration)
+                    rec_start = time.monotonic()
+                    audio_bytes = await record_snippet(
+                        duration=duration,
+                        sample_rate=sample_rate,
+                        device=device,
+                        channels=channels,
+                    )
+                    rec_elapsed = time.monotonic() - rec_start
+                    log.info(
+                        "[%s] Recording done (%.1fs, %d bytes)",
+                        label,
+                        rec_elapsed,
+                        len(audio_bytes),
+                    )
 
                 log.info("[%s] Sending to Shazam for recognition...", label)
                 recog_start = time.monotonic()
