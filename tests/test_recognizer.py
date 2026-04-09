@@ -1,8 +1,9 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from aioresponses import aioresponses
 
-from backend.recognizer import Recognizer, _upscale_apple_music_url
+from backend.recognizer import Recognizer, _apple_music_candidates
 
 
 @pytest.fixture
@@ -60,12 +61,17 @@ class TestRecognizerIdentify:
     async def test_successful_identification(self, recognizer):
         recognizer.shazam.recognize.return_value = SHAZAM_RESPONSE_FULL
 
-        track = await recognizer.identify(b"fake_audio")
+        with aioresponses() as mocked:
+            mocked.head(
+                "https://is1-ssl.mzstatic.com/image/thumb/Music/v4/test/3000x3000cc.jpg",
+                status=200,
+            )
+            track = await recognizer.identify(b"fake_audio")
 
         assert track is not None
         assert track.title == "Bohemian Rhapsody"
         assert track.artist == "Queen"
-        assert "3000x3000bb" in track.cover_url
+        assert "3000x3000cc" in track.cover_url
         assert track.album == "A Night at the Opera"
 
     @pytest.mark.asyncio
@@ -93,14 +99,6 @@ class TestRecognizerIdentify:
         assert track is None
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_coverart_when_no_hq(self, recognizer):
-        recognizer.shazam.recognize.return_value = SHAZAM_RESPONSE_NO_HQ
-
-        track = await recognizer.identify(b"fake_audio")
-
-        assert "3000x3000bb" in track.cover_url
-
-    @pytest.mark.asyncio
     async def test_no_images_returns_none_cover(self, recognizer):
         recognizer.shazam.recognize.return_value = SHAZAM_RESPONSE_NO_IMAGES
 
@@ -121,39 +119,77 @@ class TestRecognizerIdentify:
         assert track.artist == "Unknown"
 
 
-class TestExtractCover:
-    def test_prefers_hq_and_upscales(self):
+class TestExtractCoverUrl:
+    def test_prefers_hq(self):
         data = {"images": {
             "coverart": "https://mzstatic.com/200x200bb.jpg",
             "coverarthq": "https://mzstatic.com/400x400bb.jpg",
         }}
-        result = Recognizer._extract_cover(data)
-        assert "3000x3000bb" in result
+        result = Recognizer._extract_cover_url(data)
+        assert result == "https://mzstatic.com/400x400bb.jpg"
 
     def test_falls_back_to_coverart(self):
         data = {"images": {"coverart": "https://mzstatic.com/200x200bb.jpg"}}
-        result = Recognizer._extract_cover(data)
-        assert "3000x3000bb" in result
+        result = Recognizer._extract_cover_url(data)
+        assert result == "https://mzstatic.com/200x200bb.jpg"
 
     def test_no_images_key(self):
-        assert Recognizer._extract_cover({}) is None
+        assert Recognizer._extract_cover_url({}) is None
 
     def test_empty_images(self):
-        assert Recognizer._extract_cover({"images": {}}) is None
+        assert Recognizer._extract_cover_url({"images": {}}) is None
 
 
-class TestUpscaleAppleMusicUrl:
-    def test_rewrites_dimensions(self):
-        url = "https://is1-ssl.mzstatic.com/image/thumb/Music/v4/ab/cd/400x400bb.jpg"
-        result = _upscale_apple_music_url(url)
-        assert result == "https://is1-ssl.mzstatic.com/image/thumb/Music/v4/ab/cd/3000x3000bb.jpg"
+class TestAppleMusicCandidates:
+    def test_generates_three_candidates(self):
+        url = "https://mzstatic.com/400x400bb.jpg"
+        candidates = _apple_music_candidates(url)
+        assert len(candidates) == 3
+        assert "3000x3000cc" in candidates[0]
+        assert "3000x3000bb" in candidates[1]
+        assert "3000x3000sr" in candidates[2]
 
     def test_custom_size(self):
-        url = "https://mzstatic.com/200x200bb.jpg"
-        result = _upscale_apple_music_url(url, size=1200)
-        assert "1200x1200bb" in result
+        url = "https://mzstatic.com/400x400bb.jpg"
+        candidates = _apple_music_candidates(url, size=1200)
+        assert "1200x1200cc" in candidates[0]
 
-    def test_no_match_returns_unchanged(self):
+    def test_no_match_returns_empty(self):
         url = "https://example.com/cover.jpg"
-        result = _upscale_apple_music_url(url)
+        candidates = _apple_music_candidates(url)
+        assert candidates == []
+
+
+class TestResolveCover:
+    @pytest.mark.asyncio
+    async def test_returns_first_successful_suffix(self):
+        url = "https://mzstatic.com/400x400bb.jpg"
+        with aioresponses() as mocked:
+            mocked.head("https://mzstatic.com/3000x3000cc.jpg", status=403)
+            mocked.head("https://mzstatic.com/3000x3000bb.jpg", status=200)
+            result = await Recognizer.resolve_cover(url)
+        assert "3000x3000bb" in result
+
+    @pytest.mark.asyncio
+    async def test_prefers_cc_over_bb(self):
+        url = "https://mzstatic.com/400x400bb.jpg"
+        with aioresponses() as mocked:
+            mocked.head("https://mzstatic.com/3000x3000cc.jpg", status=200)
+            result = await Recognizer.resolve_cover(url)
+        assert "3000x3000cc" in result
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_original_when_all_fail(self):
+        url = "https://mzstatic.com/400x400bb.jpg"
+        with aioresponses() as mocked:
+            mocked.head("https://mzstatic.com/3000x3000cc.jpg", status=403)
+            mocked.head("https://mzstatic.com/3000x3000bb.jpg", status=403)
+            mocked.head("https://mzstatic.com/3000x3000sr.jpg", status=403)
+            result = await Recognizer.resolve_cover(url)
+        assert result == url
+
+    @pytest.mark.asyncio
+    async def test_non_apple_url_returned_as_is(self):
+        url = "https://example.com/cover.jpg"
+        result = await Recognizer.resolve_cover(url)
         assert result == url

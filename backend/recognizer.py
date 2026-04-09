@@ -1,11 +1,14 @@
 import logging
 import re
 
+import aiohttp
 from shazamio import Shazam
 
 from backend.models import TrackInfo
 
 log = logging.getLogger("framedisplay")
+
+APPLE_MUSIC_SUFFIXES = ["cc", "bb", "sr"]
 
 
 class Recognizer:
@@ -23,11 +26,14 @@ class Recognizer:
         album = self._extract_album(track_data)
         log.info("Shazam metadata - album: %s", album)
 
+        raw_cover = self._extract_cover_url(track_data)
+        cover_url = await self.resolve_cover(raw_cover) if raw_cover else None
+
         return TrackInfo(
             title=track_data.get("title", "Unknown"),
             artist=track_data.get("subtitle", "Unknown"),
             album=album,
-            cover_url=self._extract_cover(track_data),
+            cover_url=cover_url,
         )
 
     @staticmethod
@@ -39,19 +45,37 @@ class Recognizer:
         return None
 
     @staticmethod
-    def _extract_cover(track_data: dict) -> str | None:
+    def _extract_cover_url(track_data: dict) -> str | None:
         images = track_data.get("images", {})
-        url = images.get("coverarthq") or images.get("coverart")
-        if url:
-            url = _upscale_apple_music_url(url)
+        return images.get("coverarthq") or images.get("coverart")
+
+    @staticmethod
+    async def resolve_cover(url: str, size: int = 3000) -> str:
+        """Try Apple Music CDN suffixes (cc, bb, sr) and return the first that works."""
+        candidates = _apple_music_candidates(url, size)
+        if not candidates:
+            return url
+
+        async with aiohttp.ClientSession() as session:
+            for candidate in candidates:
+                try:
+                    async with session.head(candidate, allow_redirects=True) as resp:
+                        if resp.status == 200:
+                            log.info("Apple Music cover resolved: %s", candidate)
+                            return candidate
+                        log.info("Apple Music cover %d: %s", resp.status, candidate)
+                except aiohttp.ClientError:
+                    log.info("Apple Music cover failed: %s", candidate)
+
+        log.info("All Apple Music variants failed, using original: %s", url)
         return url
 
 
-def _upscale_apple_music_url(url: str, size: int = 3000) -> str:
-    """Rewrite Apple Music CDN URLs to request a higher resolution image."""
-    result = re.sub(r"\d+x\d+bb", f"{size}x{size}bb", url)
-    if result != url:
-        log.info("Apple Music upscale: %s -> %s", url, result)
-    else:
-        log.info("Apple Music upscale: no match in URL %s", url)
-    return result
+def _apple_music_candidates(url: str, size: int = 3000) -> list[str]:
+    """Generate candidate URLs for each suffix in priority order."""
+    candidates = []
+    for suffix in APPLE_MUSIC_SUFFIXES:
+        result = re.sub(r"\d+x\d+[a-z]{2}", f"{size}x{size}{suffix}", url)
+        if result != url:
+            candidates.append(result)
+    return candidates
