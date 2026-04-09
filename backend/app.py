@@ -82,30 +82,57 @@ class FrameDisplayApp:
         channels = audio_cfg.get("channels", 1)
         interval = audio_cfg.get("loop_interval", 10)
 
+        import time
+
         while True:
+            loop_start = time.monotonic()
             try:
                 self.state = DisplayState.LISTENING
+                log.info("Recording %ss audio snippet...", duration)
+                rec_start = time.monotonic()
                 audio_bytes = await record_snippet(
                     duration=duration,
                     sample_rate=sample_rate,
                     device=device,
                     channels=channels,
                 )
+                rec_elapsed = time.monotonic() - rec_start
+                log.info(
+                    "Recording done (%.1fs, %d bytes)",
+                    rec_elapsed,
+                    len(audio_bytes),
+                )
 
+                log.info("Sending to Shazam for recognition...")
+                recog_start = time.monotonic()
                 track = await self.recognizer.identify(audio_bytes)
+                recog_elapsed = time.monotonic() - recog_start
 
                 if track is None:
                     self._miss_count += 1
+                    log.info(
+                        "No match (%.1fs, miss %d/%d)",
+                        recog_elapsed,
+                        self._miss_count,
+                        MISS_THRESHOLD,
+                    )
                     if (
                         self._miss_count >= MISS_THRESHOLD
                         and self.state != DisplayState.IDLE
                     ):
+                        log.info("Miss threshold reached, going idle")
                         self.state = DisplayState.IDLE
                         self.current_track = None
                         await self._broadcast(self._build_message())
                     await asyncio.sleep(interval)
                     continue
 
+                log.info(
+                    "Recognized: %s - %s (%.1fs)",
+                    track.artist,
+                    track.title,
+                    recog_elapsed,
+                )
                 self._miss_count = 0
 
                 # Same song still playing
@@ -113,12 +140,16 @@ class FrameDisplayApp:
                     self.current_track
                     and track.display_key == self.current_track.display_key
                 ):
+                    log.info("Same track still playing, skipping update")
                     await asyncio.sleep(interval)
                     continue
 
                 # Enrich via Discogs
                 if self.discogs:
+                    log.info("Enriching via Discogs...")
+                    discogs_start = time.monotonic()
                     track = await self.discogs.enrich(track)
+                    log.info("Discogs done (%.1fs)", time.monotonic() - discogs_start)
 
                 self.current_track = track
                 self.state = DisplayState.IDENTIFIED
@@ -128,6 +159,12 @@ class FrameDisplayApp:
             except Exception:
                 log.exception("Error in listen loop")
 
+            loop_elapsed = time.monotonic() - loop_start
+            log.info(
+                "Loop cycle took %.1fs, sleeping %ds",
+                loop_elapsed,
+                interval,
+            )
             await asyncio.sleep(interval)
 
     def _build_message(self) -> dict:
