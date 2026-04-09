@@ -29,13 +29,7 @@ body {
 }
 
 #cover {
-    width: 85vw;
-    height: 85vw;
-    aspect-ratio: 1 / 1;
-    object-fit: contain;
-    border-radius: 4px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8);
-    transition: opacity 0.6s ease;
+    max-width: 85vw;
 }
 
 #info {
