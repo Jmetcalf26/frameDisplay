@@ -35,6 +35,7 @@ class FrameDisplayApp:
         self.state: DisplayState = DisplayState.IDLE
         self._miss_count = 0
         self._current_audio_end: float = 0.0  # monotonic time when current track's audio ended
+        self._current_audio_start: float = 0.0  # monotonic time when current track's audio started
 
     async def start(self):
         app = aiohttp.web.Application()
@@ -76,7 +77,9 @@ class FrameDisplayApp:
                 dead.add(ws)
         self.ws_clients -= dead
 
-    async def _handle_recognition(self, label: str, audio_bytes: bytes, audio_end_time: float):
+    async def _handle_recognition(
+        self, label: str, audio_bytes: bytes, audio_end_time: float, audio_start_time: float = 0.0,
+    ):
         """Recognize audio and update display if a new track is found."""
         log.info("[%s] Sending to Shazam...", label)
         recog_start = time.monotonic()
@@ -100,6 +103,7 @@ class FrameDisplayApp:
                 self.state = DisplayState.IDLE
                 self.current_track = None
                 self._current_audio_end = 0.0
+                self._current_audio_start = 0.0
                 await self._broadcast(self._build_message())
             return
 
@@ -121,11 +125,18 @@ class FrameDisplayApp:
 
         # Reject stale results: if this audio ended before the current track's audio,
         # it's outdated (e.g. a cumulative snapshot finishing after a windowed one already matched)
-        if audio_end_time < self._current_audio_end:
+        # At equal end times, prefer the result with fresher (later-starting) audio —
+        # a windowed snapshot beats a cumulative one at the same snapshot point.
+        if audio_end_time < self._current_audio_end or (
+            audio_end_time == self._current_audio_end
+            and audio_start_time < self._current_audio_start
+        ):
             log.info(
-                "[%s] Stale result (audio ended %.1fs before current), skipping",
+                "[%s] Stale result (audio %s, current %s-%s), skipping",
                 label,
-                self._current_audio_end - audio_end_time,
+                f"{audio_start_time:.1f}-{audio_end_time:.1f}",
+                f"{self._current_audio_start:.1f}",
+                f"{self._current_audio_end:.1f}",
             )
             return
 
@@ -137,6 +148,7 @@ class FrameDisplayApp:
 
         self.current_track = track
         self._current_audio_end = audio_end_time
+        self._current_audio_start = audio_start_time
         self.state = DisplayState.IDENTIFIED
         log.info("[%s] Now playing: %s - %s", label, track.artist, track.title)
         await self._broadcast(self._build_message())
@@ -166,9 +178,9 @@ class FrameDisplayApp:
                 self.state = DisplayState.LISTENING
                 log.info("Recording %ds (snapshots at %s)...", total_duration, snapshot_durations)
 
-                async def on_snapshot(label, wav_bytes, audio_end_time):
+                async def on_snapshot(label, wav_bytes, audio_start_time, audio_end_time):
                     log.info("[%s] Snapshot ready (%d bytes)", label, len(wav_bytes))
-                    await self._handle_recognition(label, wav_bytes, audio_end_time)
+                    await self._handle_recognition(label, wav_bytes, audio_end_time, audio_start_time)
 
                 full_wav = await record_with_snapshots(
                     total_duration=total_duration,
@@ -182,7 +194,9 @@ class FrameDisplayApp:
 
                 full_audio_end = loop_start + total_duration
                 log.info("Full recording ready (%d bytes)", len(full_wav))
-                await self._handle_recognition(f"full-{total_duration:.0f}s", full_wav, full_audio_end)
+                await self._handle_recognition(
+                    f"full-{total_duration:.0f}s", full_wav, full_audio_end, loop_start,
+                )
 
             except Exception:
                 log.exception("Error in listen loop")

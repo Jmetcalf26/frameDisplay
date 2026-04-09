@@ -193,15 +193,56 @@ class TestRecencyPriority:
         assert app._current_audio_end == 0.0
 
     @pytest.mark.asyncio
-    async def test_equal_audio_end_accepted(self, app):
-        """A result with equal audio end time should be accepted (same snapshot point)."""
+    async def test_cumulative_rejected_when_windowed_already_matched(self, app):
+        """At the same snapshot point, cumulative (start=0) loses to windowed (start=5)."""
+        app.recognizer.identify = AsyncMock(
+            return_value=TrackInfo(title="Old Song", artist="Old Artist")
+        )
+        # Windowed-5s-10s already set the track with audio_start=105, audio_end=110
+        app.current_track = TrackInfo(title="Current Song", artist="Current Artist")
+        app.state = DisplayState.IDENTIFIED
+        app._current_audio_end = 110.0
+        app._current_audio_start = 105.0
+
+        # Cumulative-10s has same end time but starts earlier (100)
+        await app._handle_recognition(
+            "cumulative-10s", b"audio", audio_end_time=110.0, audio_start_time=100.0,
+        )
+
+        assert app.current_track.title == "Current Song"
+
+    @pytest.mark.asyncio
+    async def test_windowed_wins_over_cumulative_at_same_endpoint(self, app):
+        """At the same snapshot point, windowed (later start) beats cumulative (start=0)."""
+        new_track = TrackInfo(title="New Song", artist="New Artist")
+        app.recognizer.identify = AsyncMock(return_value=new_track)
+        # Cumulative-10s set the track with audio_start=100, audio_end=110
+        app.current_track = TrackInfo(title="Old Song", artist="Old Artist")
+        app.state = DisplayState.IDENTIFIED
+        app._current_audio_end = 110.0
+        app._current_audio_start = 100.0
+
+        # Windowed-5s-10s has same end time but starts later (105)
+        await app._handle_recognition(
+            "windowed-5s-10s", b"audio", audio_end_time=110.0, audio_start_time=105.0,
+        )
+
+        assert app.current_track.title == "New Song"
+        assert app._current_audio_start == 105.0
+
+    @pytest.mark.asyncio
+    async def test_equal_start_and_end_accepted(self, app):
+        """Two results with identical audio windows should still be accepted (e.g. first snapshot)."""
         new_track = TrackInfo(title="New Song", artist="New Artist")
         app.recognizer.identify = AsyncMock(return_value=new_track)
         app.current_track = TrackInfo(title="Old Song", artist="Old Artist")
         app.state = DisplayState.IDENTIFIED
-        app._current_audio_end = 100.0
+        app._current_audio_end = 105.0
+        app._current_audio_start = 100.0
 
-        await app._handle_recognition("cumulative-10s", b"audio", audio_end_time=100.0)
+        await app._handle_recognition(
+            "windowed-0s-5s", b"audio", audio_end_time=105.0, audio_start_time=100.0,
+        )
 
         assert app.current_track.title == "New Song"
 

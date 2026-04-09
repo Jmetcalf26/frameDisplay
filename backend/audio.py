@@ -59,10 +59,10 @@ async def record_with_snapshots(
         sample_rate: Sample rate in Hz.
         device: Audio device index or None for default.
         channels: Number of audio channels.
-        on_snapshot: async callable(label, wav_bytes, audio_end_time) called for each snapshot.
-                     label is e.g. "cumulative-5s" or "windowed-5s-10s".
-                     audio_end_time is the monotonic time when the snapshot's audio ended.
-        record_start_time: monotonic timestamp of when recording started (for audio_end_time calc).
+        on_snapshot: async callable(label, wav_bytes, audio_start_time, audio_end_time)
+                     called for each snapshot. label is e.g. "cumulative-5s" or "windowed-5s-10s".
+                     audio_start_time/audio_end_time are monotonic timestamps of the audio window.
+        record_start_time: monotonic timestamp of when recording started (for timestamp calc).
 
     Returns:
         WAV bytes of the full recording.
@@ -120,13 +120,20 @@ async def record_with_snapshots(
                 if on_snapshot:
                     audio_end = record_start_time + snap_duration
                     asyncio.run_coroutine_threadsafe(
-                        on_snapshot(f"cumulative-{snap_duration:.0f}s", cumulative_wav, audio_end),
+                        on_snapshot(
+                            f"cumulative-{snap_duration:.0f}s",
+                            cumulative_wav,
+                            record_start_time,  # cumulative starts from beginning
+                            audio_end,
+                        ),
                         loop,
                     )
+                    windowed_start = record_start_time + prev_snap_sec
                     asyncio.run_coroutine_threadsafe(
                         on_snapshot(
                             f"windowed-{prev_snap_sec:.0f}s-{snap_duration:.0f}s",
                             windowed_wav,
+                            windowed_start,  # windowed starts from previous snapshot
                             audio_end,
                         ),
                         loop,
