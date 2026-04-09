@@ -153,8 +153,7 @@ class FrameDisplayApp:
                 self.state = DisplayState.LISTENING
                 log.info("Recording %ds (snapshots at %s)...", total_duration, snapshot_durations)
 
-                async def on_snapshot(snap_duration, wav_bytes):
-                    label = f"snap-{snap_duration:.0f}s"
+                async def on_snapshot(label, wav_bytes):
                     log.info("[%s] Snapshot ready (%d bytes)", label, len(wav_bytes))
                     await self._handle_recognition(label, wav_bytes)
 

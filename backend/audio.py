@@ -48,14 +48,18 @@ async def record_with_snapshots(
 ) -> bytes:
     """Record audio, firing snapshots at specified times while continuing to record.
 
+    At each snapshot time, two callbacks are fired:
+      - cumulative: all audio from the start up to the snapshot point
+      - windowed: only the audio since the previous snapshot (or start)
+
     Args:
         total_duration: Total seconds to record.
-        snapshot_at: List of times (in seconds) to snapshot the buffer so far.
-                     Each snapshot is sent to on_snapshot as WAV bytes.
+        snapshot_at: List of times (in seconds) to snapshot.
         sample_rate: Sample rate in Hz.
         device: Audio device index or None for default.
         channels: Number of audio channels.
-        on_snapshot: async callable(duration, wav_bytes) called for each snapshot.
+        on_snapshot: async callable(label, wav_bytes) called for each snapshot.
+                     label is e.g. "cumulative-5s" or "windowed-5s-10s".
 
     Returns:
         WAV bytes of the full recording.
@@ -65,9 +69,9 @@ async def record_with_snapshots(
     samples_recorded = 0
     lock = threading.Lock()
 
-    # Sort snapshots and track which have fired
     pending_snapshots = sorted(snapshot_at)
     snapshot_samples = [int(t * sample_rate) for t in pending_snapshots]
+    prev_snapshot_sample = 0
 
     def callback(indata, frames, time_info, status):
         nonlocal samples_recorded
@@ -93,19 +97,34 @@ async def record_with_snapshots(
 
     with stream:
         while samples_recorded < total_samples:
-            # Check if any snapshots should fire
             while snapshot_samples and samples_recorded >= snapshot_samples[0]:
                 snap_duration = pending_snapshots.pop(0)
-                snapshot_samples.pop(0)
+                snap_sample_end = snapshot_samples.pop(0)
 
                 buf = get_buffer_copy()
-                snap_samples = int(snap_duration * sample_rate)
-                snap_buf = buf[:snap_samples]
-                wav = to_wav_bytes(snap_buf, sample_rate)
+
+                # Cumulative: start to snapshot point
+                cumulative_buf = buf[:snap_sample_end]
+                cumulative_wav = to_wav_bytes(cumulative_buf, sample_rate)
+
+                # Windowed: previous snapshot to this snapshot
+                windowed_buf = buf[prev_snapshot_sample:snap_sample_end]
+                windowed_wav = to_wav_bytes(windowed_buf, sample_rate)
+
+                prev_snap_sec = prev_snapshot_sample / sample_rate
+                prev_snapshot_sample = snap_sample_end
 
                 if on_snapshot:
                     asyncio.run_coroutine_threadsafe(
-                        on_snapshot(snap_duration, wav), loop
+                        on_snapshot(f"cumulative-{snap_duration:.0f}s", cumulative_wav),
+                        loop,
+                    )
+                    asyncio.run_coroutine_threadsafe(
+                        on_snapshot(
+                            f"windowed-{prev_snap_sec:.0f}s-{snap_duration:.0f}s",
+                            windowed_wav,
+                        ),
+                        loop,
                     )
 
             await asyncio.sleep(0.1)
