@@ -105,29 +105,35 @@ async def record_with_snapshots(
                 snap_sample_end = snapshot_samples.pop(0)
 
                 buf = get_buffer_copy()
-
-                # Cumulative: start to snapshot point
-                cumulative_buf = buf[:snap_sample_end]
-                cumulative_wav = to_wav_bytes(cumulative_buf, sample_rate)
+                is_first_snapshot = prev_snapshot_sample == 0
 
                 # Windowed: previous snapshot to this snapshot
                 windowed_buf = buf[prev_snapshot_sample:snap_sample_end]
                 windowed_wav = to_wav_bytes(windowed_buf, sample_rate)
+
+                # Cumulative: start to snapshot point. Skip on the first
+                # snapshot — it would be bit-for-bit identical to the
+                # windowed one and just doubles up Shazam calls.
+                cumulative_wav = None
+                if not is_first_snapshot:
+                    cumulative_buf = buf[:snap_sample_end]
+                    cumulative_wav = to_wav_bytes(cumulative_buf, sample_rate)
 
                 prev_snap_sec = prev_snapshot_sample / sample_rate
                 prev_snapshot_sample = snap_sample_end
 
                 if on_snapshot:
                     audio_end = record_start_time + snap_duration
-                    asyncio.run_coroutine_threadsafe(
-                        on_snapshot(
-                            f"cumulative-{snap_duration:.0f}s",
-                            cumulative_wav,
-                            record_start_time,  # cumulative starts from beginning
-                            audio_end,
-                        ),
-                        loop,
-                    )
+                    if cumulative_wav is not None:
+                        asyncio.run_coroutine_threadsafe(
+                            on_snapshot(
+                                f"cumulative-{snap_duration:.0f}s",
+                                cumulative_wav,
+                                record_start_time,  # cumulative starts from beginning
+                                audio_end,
+                            ),
+                            loop,
+                        )
                     windowed_start = record_start_time + prev_snap_sec
                     asyncio.run_coroutine_threadsafe(
                         on_snapshot(
