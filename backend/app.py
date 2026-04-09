@@ -110,7 +110,18 @@ class FrameDisplayApp:
         await site.start()
         log.info("Serving on http://%s:%s", srv_cfg.get("host"), srv_cfg.get("port"))
 
-        await self._listen_loop()
+        try:
+            await self._listen_loop()
+        finally:
+            log.info("Shutting down...")
+            await runner.cleanup()
+            await self.shutdown()
+
+    async def shutdown(self):
+        """Release external resources held by the app."""
+        if self.discogs is not None:
+            await self.discogs.close()
+            log.info("Closed Discogs client")
 
     async def _ws_handler(self, request):
         ws = aiohttp.web.WebSocketResponse()

@@ -330,6 +330,20 @@ class TestCacheIntegration:
         assert app.current_track.cover_url == "http://resolved.jpg"
 
 
+class TestShutdown:
+    @pytest.mark.asyncio
+    async def test_shutdown_closes_discogs(self, app_with_discogs):
+        app_with_discogs.discogs.close = AsyncMock()
+        await app_with_discogs.shutdown()
+        app_with_discogs.discogs.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_no_discogs(self, app):
+        # Should not raise when discogs is None
+        assert app.discogs is None
+        await app.shutdown()
+
+
 class TestBroadcast:
     @pytest.mark.asyncio
     async def test_broadcast_sends_to_all_clients(self, app):
