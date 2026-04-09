@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import pathlib
+import time
 
 import aiohttp.web
 
@@ -33,6 +34,7 @@ class FrameDisplayApp:
         self.current_track: TrackInfo | None = None
         self.state: DisplayState = DisplayState.IDLE
         self._miss_count = 0
+        self._lock = asyncio.Lock()
 
     async def start(self):
         app = aiohttp.web.Application()
@@ -51,7 +53,31 @@ class FrameDisplayApp:
         await site.start()
         log.info("Serving on http://%s:%s", srv_cfg.get("host"), srv_cfg.get("port"))
 
-        await self._listen_loop()
+        audio_cfg = self.config.get("audio", {})
+        listeners = audio_cfg.get("listeners", [
+            {"snippet_duration": 5, "loop_interval": 10},
+        ])
+
+        tasks = []
+        for i, listener_cfg in enumerate(listeners):
+            duration = listener_cfg.get("snippet_duration", 5)
+            interval = listener_cfg.get("loop_interval", 10)
+            label = f"listener-{duration}s"
+            tasks.append(
+                asyncio.create_task(
+                    self._listen_loop(
+                        label=label,
+                        duration=duration,
+                        sample_rate=audio_cfg.get("sample_rate", 44100),
+                        device=audio_cfg.get("device"),
+                        channels=audio_cfg.get("channels", 1),
+                        interval=interval,
+                    )
+                )
+            )
+            log.info("Started %s (interval=%ds)", label, interval)
+
+        await asyncio.gather(*tasks)
 
     async def _ws_handler(self, request):
         ws = aiohttp.web.WebSocketResponse()
@@ -74,21 +100,19 @@ class FrameDisplayApp:
                 dead.add(ws)
         self.ws_clients -= dead
 
-    async def _listen_loop(self):
-        audio_cfg = self.config.get("audio", {})
-        duration = audio_cfg.get("snippet_duration", 5)
-        sample_rate = audio_cfg.get("sample_rate", 44100)
-        device = audio_cfg.get("device")
-        channels = audio_cfg.get("channels", 1)
-        interval = audio_cfg.get("loop_interval", 10)
-
-        import time
-
+    async def _listen_loop(
+        self,
+        label: str,
+        duration: float,
+        sample_rate: int,
+        device,
+        channels: int,
+        interval: int,
+    ):
         while True:
             loop_start = time.monotonic()
             try:
-                self.state = DisplayState.LISTENING
-                log.info("Recording %ss audio snippet...", duration)
+                log.info("[%s] Recording %ss audio snippet...", label, duration)
                 rec_start = time.monotonic()
                 audio_bytes = await record_snippet(
                     duration=duration,
@@ -98,78 +122,88 @@ class FrameDisplayApp:
                 )
                 rec_elapsed = time.monotonic() - rec_start
                 log.info(
-                    "Recording done (%.1fs, %d bytes)",
+                    "[%s] Recording done (%.1fs, %d bytes)",
+                    label,
                     rec_elapsed,
                     len(audio_bytes),
                 )
 
-                log.info("Sending to Shazam for recognition...")
+                log.info("[%s] Sending to Shazam for recognition...", label)
                 recog_start = time.monotonic()
                 track = await self.recognizer.identify(audio_bytes)
                 recog_elapsed = time.monotonic() - recog_start
 
-                if track is None:
-                    self._miss_count += 1
+                async with self._lock:
+                    if track is None:
+                        self._miss_count += 1
+                        log.info(
+                            "[%s] No match (%.1fs, miss %d/%d)",
+                            label,
+                            recog_elapsed,
+                            self._miss_count,
+                            MISS_THRESHOLD,
+                        )
+                        if (
+                            self._miss_count >= MISS_THRESHOLD
+                            and self.state != DisplayState.IDLE
+                        ):
+                            log.info("[%s] Miss threshold reached, going idle", label)
+                            self.state = DisplayState.IDLE
+                            self.current_track = None
+                            await self._broadcast(self._build_message())
+                        if interval:
+                            await asyncio.sleep(interval)
+                        continue
+
                     log.info(
-                        "No match (%.1fs, miss %d/%d)",
+                        "[%s] Recognized: %s - %s (%.1fs)",
+                        label,
+                        track.artist,
+                        track.title,
                         recog_elapsed,
-                        self._miss_count,
-                        MISS_THRESHOLD,
                     )
+                    self._miss_count = 0
+
+                    # Same song still playing
                     if (
-                        self._miss_count >= MISS_THRESHOLD
-                        and self.state != DisplayState.IDLE
+                        self.current_track
+                        and track.display_key == self.current_track.display_key
                     ):
-                        log.info("Miss threshold reached, going idle")
-                        self.state = DisplayState.IDLE
-                        self.current_track = None
-                        await self._broadcast(self._build_message())
-                    if interval:
-                        await asyncio.sleep(interval)
-                    continue
+                        log.info("[%s] Same track still playing, skipping update", label)
+                        if interval:
+                            await asyncio.sleep(interval)
+                        continue
 
-                log.info(
-                    "Recognized: %s - %s (%.1fs)",
-                    track.artist,
-                    track.title,
-                    recog_elapsed,
-                )
-                self._miss_count = 0
+                    # Enrich via Discogs
+                    if self.discogs:
+                        log.info("[%s] Enriching via Discogs...", label)
+                        discogs_start = time.monotonic()
+                        track = await self.discogs.enrich(track)
+                        log.info(
+                            "[%s] Discogs done (%.1fs)",
+                            label,
+                            time.monotonic() - discogs_start,
+                        )
 
-                # Same song still playing
-                if (
-                    self.current_track
-                    and track.display_key == self.current_track.display_key
-                ):
-                    log.info("Same track still playing, skipping update")
-                    await asyncio.sleep(interval)
-                    continue
-
-                # Enrich via Discogs
-                if self.discogs:
-                    log.info("Enriching via Discogs...")
-                    discogs_start = time.monotonic()
-                    track = await self.discogs.enrich(track)
-                    log.info("Discogs done (%.1fs)", time.monotonic() - discogs_start)
-
-                self.current_track = track
-                self.state = DisplayState.IDENTIFIED
-                log.info("Now playing: %s - %s", track.artist, track.title)
-                await self._broadcast(self._build_message())
+                    self.current_track = track
+                    self.state = DisplayState.IDENTIFIED
+                    log.info("[%s] Now playing: %s - %s", label, track.artist, track.title)
+                    await self._broadcast(self._build_message())
 
             except Exception:
-                log.exception("Error in listen loop")
+                log.exception("[%s] Error in listen loop", label)
 
             loop_elapsed = time.monotonic() - loop_start
             if interval:
                 log.info(
-                    "Loop cycle took %.1fs, sleeping %ds",
+                    "[%s] Loop cycle took %.1fs, sleeping %ds",
+                    label,
                     loop_elapsed,
                     interval,
                 )
                 await asyncio.sleep(interval)
             else:
-                log.info("Loop cycle took %.1fs, no sleep", loop_elapsed)
+                log.info("[%s] Loop cycle took %.1fs, no sleep", label, loop_elapsed)
 
     def _build_message(self) -> dict:
         msg: dict = {"state": self.state.value}

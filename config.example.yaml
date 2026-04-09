@@ -2,8 +2,11 @@ audio:
   device: null          # null = system default; or device index/name
   sample_rate: 44100
   channels: 1
-  snippet_duration: 5   # seconds per recording
-  loop_interval: 10     # seconds between recognition attempts
+  listeners:            # multiple listeners run in parallel
+    - snippet_duration: 5   # fast listener
+      loop_interval: 10
+    - snippet_duration: 10  # deep listener for harder matches
+      loop_interval: 15
 
 discogs:
   consumer_key: "YOUR_KEY_HERE"
