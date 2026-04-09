@@ -124,7 +124,8 @@ class FrameDisplayApp:
                         self.state = DisplayState.IDLE
                         self.current_track = None
                         await self._broadcast(self._build_message())
-                    await asyncio.sleep(interval)
+                    if interval:
+                        await asyncio.sleep(interval)
                     continue
 
                 log.info(
@@ -160,12 +161,15 @@ class FrameDisplayApp:
                 log.exception("Error in listen loop")
 
             loop_elapsed = time.monotonic() - loop_start
-            log.info(
-                "Loop cycle took %.1fs, sleeping %ds",
-                loop_elapsed,
-                interval,
-            )
-            await asyncio.sleep(interval)
+            if interval:
+                log.info(
+                    "Loop cycle took %.1fs, sleeping %ds",
+                    loop_elapsed,
+                    interval,
+                )
+                await asyncio.sleep(interval)
+            else:
+                log.info("Loop cycle took %.1fs, no sleep", loop_elapsed)
 
     def _build_message(self) -> dict:
         msg: dict = {"state": self.state.value}
