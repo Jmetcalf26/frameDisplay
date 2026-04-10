@@ -17,7 +17,21 @@ acoustid:
   api_key: "YOUR_KEY_HERE"    # register at https://acoustid.org/api-key
   min_score: 0.5              # reject matches below this confidence (0-1)
 
-server:
+tv:
+  enabled: true
+  host: "192.168.1.100"
+  port: 8002
+  token_file: "cache/tv-token.txt"   # relative to project root, or absolute
+  # Matte style the Frame applies around uploaded art; "none" disables it.
+  matte: "none"
+  portrait_matte: "none"
+
+display:
+  orientation: "landscape"    # "landscape" or "portrait"
+  composed_dir: "cache/composed"  # where composed JPEGs are written/cached
+
+preview:
+  enabled: true               # false = no HTTP server at all (headless)
   host: "0.0.0.0"
   port: 8080
 

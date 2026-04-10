@@ -6,3 +6,5 @@ pyyaml>=6
 numpy>=1.24
 pyacoustid>=1.3.0
 audioop-lts>=0.2; python_version >= "3.13"
+samsungtvws[async,encrypted,cli]>=2.6
+Pillow>=10

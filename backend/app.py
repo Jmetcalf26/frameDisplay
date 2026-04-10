@@ -8,15 +8,33 @@ import aiohttp.web
 from backend.acoustid_client import AcoustIDClient
 from backend.audio import record_with_snapshots
 from backend.cache import TrackCache
+from backend.composer import Composer
 from backend.discogs import DiscogsClient
+from backend.frame_tv import FrameTV
 from backend.image_cache import ImageCache
 from backend.models import DisplayState, TrackInfo
 from backend.recognizer import Recognizer
 
 log = logging.getLogger("framedisplay")
 
-FRONTEND_DIR = pathlib.Path(__file__).resolve().parent.parent / "frontend"
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+# Tiny inline HTML for the debug preview page — displays /current.jpg and
+# auto-refreshes every few seconds. Kept inline so there's no frontend dir.
+_PREVIEW_HTML = """<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>frameDisplay preview</title></head>
+<body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh">
+  <img id="img" style="max-width:100vw;max-height:100vh;object-fit:contain">
+  <script>
+    const img = document.getElementById("img");
+    function refresh() { img.src = "/current.jpg?t=" + Date.now(); }
+    refresh();
+    setInterval(refresh, 3000);
+  </script>
+</body>
+</html>
+"""
 
 
 class FrameDisplayApp:
@@ -92,82 +110,92 @@ class FrameDisplayApp:
             else:
                 self.image_cache = None
 
-        self.ws_clients: set[aiohttp.web.WebSocketResponse] = set()
+        display_cfg = config.get("display", {})
+        self.orientation = display_cfg.get("orientation", "landscape")
+        composed_dir = pathlib.Path(display_cfg.get("composed_dir", "cache/composed"))
+        if not composed_dir.is_absolute():
+            composed_dir = PROJECT_ROOT / composed_dir
+        self.composer = Composer(orientation=self.orientation, output_dir=composed_dir)
+        log.info("Composer: %s (%s)", composed_dir, self.orientation)
+
+        tv_cfg = config.get("tv", {})
+        if tv_cfg.get("enabled"):
+            token_file = pathlib.Path(tv_cfg.get("token_file", "cache/tv-token.txt"))
+            if not token_file.is_absolute():
+                token_file = PROJECT_ROOT / token_file
+            self.frame_tv: FrameTV | None = FrameTV(
+                host=tv_cfg["host"],
+                port=tv_cfg.get("port", 8002),
+                token_file=token_file,
+                matte=tv_cfg.get("matte", "none"),
+                portrait_matte=tv_cfg.get("portrait_matte", "none"),
+            )
+            log.info("Frame TV: %s:%s (token=%s)", tv_cfg["host"], tv_cfg.get("port", 8002), token_file)
+        else:
+            self.frame_tv = None
+            log.info("Frame TV disabled")
+
         self.current_track: TrackInfo | None = None
         self.state: DisplayState = DisplayState.LISTENING
+        self._current_composed_path: pathlib.Path | None = None
         self._current_audio_end: float = 0.0
         self._current_audio_start: float = 0.0
         # Serialize shazamio calls — concurrent recognize() calls can race / corrupt state
         self._recognize_lock = asyncio.Lock()
 
     async def start(self):
-        app = aiohttp.web.Application()
-        app.router.add_get("/ws", self._ws_handler)
-        app.on_shutdown.append(self._close_websockets)
-        if self.image_cache is not None:
-            app.router.add_static(
-                ImageCache.URL_PREFIX, self.image_cache.dir, show_index=False,
+        preview_cfg = self.config.get("preview", {})
+        runner: aiohttp.web.AppRunner | None = None
+
+        if preview_cfg.get("enabled", True):
+            app = aiohttp.web.Application()
+            app.router.add_get("/", self._preview_index)
+            app.router.add_get("/current.jpg", self._preview_current)
+
+            runner = aiohttp.web.AppRunner(app)
+            await runner.setup()
+
+            site = aiohttp.web.TCPSite(
+                runner,
+                preview_cfg.get("host", "0.0.0.0"),
+                preview_cfg.get("port", 8080),
             )
-        app.router.add_static("/", FRONTEND_DIR, show_index=True)
-
-        runner = aiohttp.web.AppRunner(app)
-        await runner.setup()
-
-        srv_cfg = self.config.get("server", {})
-        site = aiohttp.web.TCPSite(
-            runner,
-            srv_cfg.get("host", "0.0.0.0"),
-            srv_cfg.get("port", 8080),
-        )
-        await site.start()
-        log.info("Serving on http://%s:%s", srv_cfg.get("host"), srv_cfg.get("port"))
+            await site.start()
+            log.info(
+                "Preview server on http://%s:%s",
+                preview_cfg.get("host", "0.0.0.0"),
+                preview_cfg.get("port", 8080),
+            )
+        else:
+            log.info("Preview server disabled")
 
         try:
             await self._listen_loop()
         finally:
             log.info("Shutting down...")
-            try:
-                await asyncio.wait_for(runner.cleanup(), timeout=5.0)
-            except asyncio.TimeoutError:
-                log.warning("runner.cleanup() timed out, forcing exit")
+            if runner is not None:
+                try:
+                    await asyncio.wait_for(runner.cleanup(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    log.warning("runner.cleanup() timed out, forcing exit")
             await self.shutdown()
-
-    async def _close_websockets(self, _app):
-        """on_shutdown handler — close every connected WebSocket so the
-        handlers exit and runner.cleanup() doesn't block on them."""
-        for ws in list(self.ws_clients):
-            try:
-                await ws.close(code=1001, message=b"Server shutting down")
-            except Exception:
-                log.exception("Error closing websocket")
-        self.ws_clients.clear()
 
     async def shutdown(self):
         """Release external resources held by the app."""
         if self.discogs is not None:
             await self.discogs.close()
             log.info("Closed Discogs client")
+        if self.frame_tv is not None:
+            await self.frame_tv.close()
+            log.info("Closed Frame TV client")
 
-    async def _ws_handler(self, request):
-        ws = aiohttp.web.WebSocketResponse()
-        await ws.prepare(request)
-        self.ws_clients.add(ws)
-        await ws.send_json(self._build_message())
-        try:
-            async for _ in ws:
-                pass
-        finally:
-            self.ws_clients.discard(ws)
-        return ws
+    async def _preview_index(self, _request):
+        return aiohttp.web.Response(text=_PREVIEW_HTML, content_type="text/html")
 
-    async def _broadcast(self, data: dict):
-        dead: set[aiohttp.web.WebSocketResponse] = set()
-        for ws in self.ws_clients:
-            try:
-                await ws.send_json(data)
-            except (ConnectionError, ConnectionResetError):
-                dead.add(ws)
-        self.ws_clients -= dead
+    async def _preview_current(self, _request):
+        if self._current_composed_path and self._current_composed_path.exists():
+            return aiohttp.web.FileResponse(self._current_composed_path)
+        return aiohttp.web.Response(status=404, text="no current image yet")
 
     async def _handle_recognition(
         self, label: str, audio_bytes: bytes, audio_end_time: float, audio_start_time: float = 0.0,
@@ -270,7 +298,31 @@ class FrameDisplayApp:
         self._current_audio_start = audio_start_time
         self.state = DisplayState.IDENTIFIED
         log.info("[%s] Now playing: %s - %s", label, track.artist, track.title)
-        await self._broadcast(self._build_message())
+        await self._display_track(track, label)
+
+    async def _display_track(self, track: TrackInfo, label: str) -> None:
+        """Compose the TV image for the track and push it to the Frame."""
+        if self.image_cache is None or not track.album:
+            log.warning("[%s] No album / image cache; skipping display", label)
+            return
+
+        key = ImageCache.album_key(track.artist, track.album)
+        cover_path = self.image_cache.file_path(key)
+        if not cover_path.exists():
+            log.warning("[%s] Cover not in image cache (%s); skipping display", label, cover_path)
+            return
+
+        try:
+            composed_path = await asyncio.to_thread(self.composer.compose, track, cover_path)
+        except Exception:
+            log.exception("[%s] Composer failed", label)
+            return
+
+        self._current_composed_path = composed_path
+        log.info("[%s] Composed image: %s", label, composed_path)
+
+        if self.frame_tv is not None:
+            await self.frame_tv.upload_and_display(composed_path)
 
     async def _listen_loop(self):
         audio_cfg = self.config.get("audio", {})
@@ -325,24 +377,3 @@ class FrameDisplayApp:
                 await asyncio.sleep(interval)
             else:
                 log.info("Loop cycle took %.1fs, no sleep", loop_elapsed)
-
-    def _build_message(self) -> dict:
-        msg: dict = {"state": self.state.value}
-        if self.current_track:
-            t = self.current_track
-            cover = t.cover_url or t.cover_url_hires
-            # Prefer locally cached image when available
-            if t.album and self.image_cache is not None:
-                local = self.image_cache.local_url_if_present(t.artist, t.album)
-                if local:
-                    cover = local
-            msg["track"] = {
-                "title": t.title,
-                "artist": t.artist,
-                "album": t.album,
-                "cover_url": cover,
-                "year": t.year,
-                "genre": t.genre,
-                "label": t.label,
-            }
-        return msg

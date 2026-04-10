@@ -15,7 +15,9 @@ MINIMAL_CONFIG = {
         "loop_interval": 10,
     },
     "discogs": {"enabled": False},
-    "server": {"host": "0.0.0.0", "port": 8080},
+    "display": {"orientation": "landscape", "composed_dir": "cache/composed"},
+    "tv": {"enabled": False},
+    "preview": {"enabled": False},
     "cache": {"enabled": False},
     "image_cache": {"enabled": False},
     "acoustid": {"enabled": False},
@@ -42,13 +44,15 @@ CONFIG_WITH_ACOUSTID = {
 
 @pytest.fixture
 def app():
-    with patch("backend.app.Recognizer"):
+    with patch("backend.app.Recognizer"), patch("backend.app.Composer"):
         return FrameDisplayApp(MINIMAL_CONFIG)
 
 
 @pytest.fixture
 def app_with_discogs():
-    with patch("backend.app.Recognizer"), patch("backend.app.DiscogsClient"):
+    with patch("backend.app.Recognizer"), patch("backend.app.DiscogsClient"), patch(
+        "backend.app.Composer"
+    ):
         return FrameDisplayApp(CONFIG_WITH_DISCOGS)
 
 
@@ -56,13 +60,15 @@ def app_with_discogs():
 def app_with_cache(tmp_path):
     from backend.cache import TrackCache
     cache = TrackCache(path=tmp_path / "cache.json", max_bytes=10_000)
-    with patch("backend.app.Recognizer"):
+    with patch("backend.app.Recognizer"), patch("backend.app.Composer"):
         return FrameDisplayApp(MINIMAL_CONFIG, cache=cache)
 
 
 @pytest.fixture
 def app_with_acoustid():
-    with patch("backend.app.Recognizer"), patch("backend.app.AcoustIDClient"):
+    with patch("backend.app.Recognizer"), patch("backend.app.AcoustIDClient"), patch(
+        "backend.app.Composer"
+    ):
         return FrameDisplayApp(CONFIG_WITH_ACOUSTID)
 
 
@@ -82,65 +88,32 @@ class TestFrameDisplayAppInit:
             **MINIMAL_CONFIG,
             "discogs": {"enabled": True, "consumer_key": "", "consumer_secret": ""},
         }
-        with patch("backend.app.Recognizer"):
+        with patch("backend.app.Recognizer"), patch("backend.app.Composer"):
             app = FrameDisplayApp(config)
         assert app.discogs is None
 
+    def test_orientation_read_from_config(self, app):
+        assert app.orientation == "landscape"
 
-class TestBuildMessage:
-    def test_listening_message_no_track(self, app):
-        app.state = DisplayState.LISTENING
-        app.current_track = None
+    def test_frame_tv_disabled(self, app):
+        assert app.frame_tv is None
 
-        msg = app._build_message()
-
-        assert msg == {"state": "listening"}
-
-    def test_identified_message_with_track(self, app):
-        app.state = DisplayState.IDENTIFIED
-        app.current_track = TrackInfo(
-            title="Blue Train",
-            artist="John Coltrane",
-            album="Blue Train",
-            cover_url="http://example.com/cover.jpg",
-            cover_url_hires="http://example.com/cover_hires.jpg",
-            year="1957",
-            genre="Jazz",
-            label="Blue Note",
-        )
-
-        msg = app._build_message()
-
-        assert msg["state"] == "identified"
-        assert msg["track"]["title"] == "Blue Train"
-        assert msg["track"]["artist"] == "John Coltrane"
-        assert msg["track"]["cover_url"] == "http://example.com/cover.jpg"
-        assert msg["track"]["year"] == "1957"
-
-    def test_apple_music_cover_preferred_over_discogs(self, app):
-        app.state = DisplayState.IDENTIFIED
-        app.current_track = TrackInfo(
-            title="Test",
-            artist="Test",
-            cover_url="http://apple.jpg",
-            cover_url_hires="http://discogs.jpg",
-        )
-
-        msg = app._build_message()
-
-        assert msg["track"]["cover_url"] == "http://apple.jpg"
-
-    def test_discogs_cover_when_no_apple(self, app):
-        app.state = DisplayState.IDENTIFIED
-        app.current_track = TrackInfo(
-            title="Test",
-            artist="Test",
-            cover_url_hires="http://discogs.jpg",
-        )
-
-        msg = app._build_message()
-
-        assert msg["track"]["cover_url"] == "http://discogs.jpg"
+    def test_frame_tv_enabled(self, tmp_path):
+        config = {
+            **MINIMAL_CONFIG,
+            "tv": {
+                "enabled": True,
+                "host": "192.168.1.50",
+                "port": 8002,
+                "token_file": str(tmp_path / "token.txt"),
+            },
+        }
+        with patch("backend.app.Recognizer"), patch("backend.app.Composer"), patch(
+            "backend.app.FrameTV"
+        ) as FakeFrameTV:
+            app = FrameDisplayApp(config)
+        assert app.frame_tv is not None
+        FakeFrameTV.assert_called_once()
 
 
 class TestNoMatchKeepsCurrent:
@@ -358,7 +331,7 @@ class TestAcoustIDFallback:
             **MINIMAL_CONFIG,
             "acoustid": {"enabled": True, "api_key": ""},
         }
-        with patch("backend.app.Recognizer"):
+        with patch("backend.app.Recognizer"), patch("backend.app.Composer"):
             app = FrameDisplayApp(config)
         assert app.acoustid is None
 
@@ -425,6 +398,64 @@ class TestAcoustIDFallback:
         assert app.current_track is None
 
 
+class TestDisplayTrack:
+    @pytest.mark.asyncio
+    async def test_display_track_skipped_without_image_cache(self, app):
+        """With image_cache disabled, _display_track should log and return."""
+        assert app.image_cache is None
+        track = TrackInfo(title="T", artist="A", album="Album")
+        # Should not raise even though composer is a MagicMock and frame_tv is None
+        await app._display_track(track, "test")
+        app.composer.compose.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_display_track_skipped_when_cover_missing(self, tmp_path):
+        """If the cover file isn't on disk, _display_track skips the compose."""
+        from backend.image_cache import ImageCache
+        img_cache = ImageCache(dir=tmp_path / "images", max_bytes=1_000_000)
+        with patch("backend.app.Recognizer"), patch("backend.app.Composer"):
+            app = FrameDisplayApp(MINIMAL_CONFIG, image_cache=img_cache)
+        track = TrackInfo(title="T", artist="A", album="NotCached")
+        await app._display_track(track, "test")
+        app.composer.compose.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_display_track_composes_and_uploads(self, tmp_path):
+        """With cover present and TV enabled, compose + upload should both fire."""
+        from backend.image_cache import ImageCache
+        img_cache = ImageCache(dir=tmp_path / "images", max_bytes=1_000_000)
+        # Drop a fake cover into the cache at the expected path
+        key = ImageCache.album_key("A", "Album")
+        img_cache._entries[key] = {"size": 4}
+        img_cache.file_path(key).write_bytes(b"fake")
+
+        config = {
+            **MINIMAL_CONFIG,
+            "tv": {
+                "enabled": True,
+                "host": "1.2.3.4",
+                "port": 8002,
+                "token_file": str(tmp_path / "token.txt"),
+            },
+        }
+        with patch("backend.app.Recognizer"), patch("backend.app.Composer"), patch(
+            "backend.app.FrameTV"
+        ) as FakeFrameTV:
+            fake_tv = FakeFrameTV.return_value
+            fake_tv.upload_and_display = AsyncMock()
+            app = FrameDisplayApp(config, image_cache=img_cache)
+            composed = tmp_path / "composed.jpg"
+            composed.write_bytes(b"x")
+            app.composer.compose = MagicMock(return_value=composed)
+
+            track = TrackInfo(title="T", artist="A", album="Album")
+            await app._display_track(track, "test")
+
+        app.composer.compose.assert_called_once()
+        fake_tv.upload_and_display.assert_awaited_once_with(composed)
+        assert app._current_composed_path == composed
+
+
 class TestShutdown:
     @pytest.mark.asyncio
     async def test_shutdown_closes_discogs(self, app_with_discogs):
@@ -438,28 +469,22 @@ class TestShutdown:
         assert app.discogs is None
         await app.shutdown()
 
-
-class TestBroadcast:
     @pytest.mark.asyncio
-    async def test_broadcast_sends_to_all_clients(self, app):
-        ws1 = AsyncMock()
-        ws2 = AsyncMock()
-        app.ws_clients = {ws1, ws2}
-
-        await app._broadcast({"state": "idle"})
-
-        ws1.send_json.assert_called_once_with({"state": "idle"})
-        ws2.send_json.assert_called_once_with({"state": "idle"})
-
-    @pytest.mark.asyncio
-    async def test_broadcast_removes_dead_clients(self, app):
-        ws_alive = AsyncMock()
-        ws_dead = AsyncMock()
-        ws_dead.send_json.side_effect = ConnectionResetError
-
-        app.ws_clients = {ws_alive, ws_dead}
-
-        await app._broadcast({"state": "idle"})
-
-        assert ws_dead not in app.ws_clients
-        assert ws_alive in app.ws_clients
+    async def test_shutdown_closes_frame_tv(self, tmp_path):
+        config = {
+            **MINIMAL_CONFIG,
+            "tv": {
+                "enabled": True,
+                "host": "1.2.3.4",
+                "port": 8002,
+                "token_file": str(tmp_path / "token.txt"),
+            },
+        }
+        with patch("backend.app.Recognizer"), patch("backend.app.Composer"), patch(
+            "backend.app.FrameTV"
+        ) as FakeFrameTV:
+            fake_tv = FakeFrameTV.return_value
+            fake_tv.close = AsyncMock()
+            app = FrameDisplayApp(config)
+            await app.shutdown()
+        fake_tv.close.assert_awaited_once()
