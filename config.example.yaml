@@ -1,3 +1,9 @@
+logging:
+  # Path to write logs to (relative to project root, or absolute).
+  # Set to null to log only to stdout.
+  file: "log.txt"
+  level: "INFO"             # DEBUG, INFO, WARNING, ERROR
+
 audio:
   device: null          # null = system default; or device index/name
   sample_rate: 44100
