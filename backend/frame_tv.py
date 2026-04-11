@@ -70,11 +70,20 @@ class FrameTV:
                 log.exception("Frame TV select_image failed for %s", content_id)
                 return
 
+            # Only flip art mode if it's currently off — calling set_artmode(True)
+            # while the TV is already in art mode hangs forever waiting for an
+            # ack the TV never sends.
             try:
-                await asyncio.to_thread(self._art.set_artmode, True)
+                current = await asyncio.to_thread(self._art.get_artmode)
             except Exception:
-                log.exception("Frame TV set_artmode failed")
-                # Keep going — the image is selected even if the mode toggle failed.
+                log.exception("Frame TV get_artmode failed")
+                current = None
+            if current != "on":
+                try:
+                    await asyncio.to_thread(self._art.set_artmode, True)
+                except Exception:
+                    log.exception("Frame TV set_artmode failed")
+                    # Keep going — the image is selected even if the mode toggle failed.
 
             # Best-effort cleanup of the prior upload so "My Collection" doesn't
             # fill up with stale track images.

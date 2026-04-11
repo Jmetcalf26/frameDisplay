@@ -222,40 +222,51 @@ class FrameDisplayApp:
                     time.monotonic() - acoustid_start,
                 )
 
-        if track is None:
-            log.info("[%s] No match (%.1fs)", label, recog_elapsed)
-            return
+            if track is None:
+                log.info("[%s] No match (%.1fs)", label, recog_elapsed)
+                return
 
-        log.info(
-            "[%s] Recognized: %s - %s (%.1fs)",
-            label,
-            track.artist,
-            track.title,
-            recog_elapsed,
-        )
-        if (
-            self.current_track
-            and track.display_key == self.current_track.display_key
-        ):
-            log.info("[%s] Same track still playing, skipping update", label)
-            return
-
-        # Reject stale results: if this audio ended before the current track's audio,
-        # it's outdated (e.g. a cumulative snapshot finishing after a windowed one already matched)
-        # At equal end times, prefer the result with fresher (later-starting) audio —
-        # a windowed snapshot beats a cumulative one at the same snapshot point.
-        if audio_end_time < self._current_audio_end or (
-            audio_end_time == self._current_audio_end
-            and audio_start_time < self._current_audio_start
-        ):
             log.info(
-                "[%s] Stale result (audio %s, current %s-%s), skipping",
+                "[%s] Recognized: %s - %s (%.1fs)",
                 label,
-                f"{audio_start_time:.1f}-{audio_end_time:.1f}",
-                f"{self._current_audio_start:.1f}",
-                f"{self._current_audio_end:.1f}",
+                track.artist,
+                track.title,
+                recog_elapsed,
             )
-            return
+
+            # Dedup + stale checks must run inside the recognizer lock so that
+            # two concurrent snapshots (cumulative + windowed) of the same
+            # audio window don't both pass and double-fire the display path.
+            if (
+                self.current_track
+                and track.display_key == self.current_track.display_key
+            ):
+                log.info("[%s] Same track still playing, skipping update", label)
+                return
+
+            # Reject stale results: if this audio ended before the current track's audio,
+            # it's outdated (e.g. a cumulative snapshot finishing after a windowed one already matched)
+            # At equal end times, prefer the result with fresher (later-starting) audio —
+            # a windowed snapshot beats a cumulative one at the same snapshot point.
+            if audio_end_time < self._current_audio_end or (
+                audio_end_time == self._current_audio_end
+                and audio_start_time < self._current_audio_start
+            ):
+                log.info(
+                    "[%s] Stale result (audio %s, current %s-%s), skipping",
+                    label,
+                    f"{audio_start_time:.1f}-{audio_end_time:.1f}",
+                    f"{self._current_audio_start:.1f}",
+                    f"{self._current_audio_end:.1f}",
+                )
+                return
+
+            # Claim the track NOW, before releasing the lock, so the next
+            # concurrent recognition sees us in the dedup check above and bails.
+            # We re-assign self.current_track to the enriched copy at the end.
+            self.current_track = track
+            self._current_audio_end = audio_end_time
+            self._current_audio_start = audio_start_time
 
         cached = self.cache.get(track.display_key) if self.cache is not None else None
         if cached is not None:
