@@ -6,6 +6,18 @@ from samsungtvws import SamsungTVWS
 
 log = logging.getLogger("framedisplay")
 
+# Errors that mean the underlying websocket has gone stale and the call
+# should be retried after a forced reconnect. BrokenPipeError /
+# ConnectionResetError both subclass OSError; websocket-client raises its
+# own WebSocketException family on top.
+_RECONNECT_ERRORS: tuple[type[BaseException], ...] = (OSError,)
+try:
+    from websocket import WebSocketException
+
+    _RECONNECT_ERRORS = (*_RECONNECT_ERRORS, WebSocketException)
+except ImportError:
+    pass
+
 
 class FrameTV:
     """Async wrapper around samsungtvws' synchronous art API.
@@ -41,6 +53,26 @@ class FrameTV:
         self._last_content_id: str | None = None
         self._lock = asyncio.Lock()
 
+    async def _call(self, fn, *args, **kwargs):
+        """Run a sync samsungtvws call in a thread, retrying once after a
+        forced reconnect if the websocket is stale.
+
+        The samsungtvws client opens its websocket lazily and reuses it. If
+        the TV (or a NAT in between) drops the connection during an idle
+        period, the next call hits BrokenPipeError on the first send. We
+        catch that, close the underlying connection so samsungtvws will
+        re-open it, and retry the call once.
+        """
+        try:
+            return await asyncio.to_thread(fn, *args, **kwargs)
+        except _RECONNECT_ERRORS as e:
+            log.warning("Frame TV call %s failed (%s); reconnecting and retrying", fn.__name__, e)
+            try:
+                await asyncio.to_thread(self._tv.close)
+            except Exception:
+                log.debug("Frame TV close during reconnect failed", exc_info=True)
+            return await asyncio.to_thread(fn, *args, **kwargs)
+
     async def upload_and_display(self, image_path: pathlib.Path) -> None:
         """Upload the composed image and make it the active art."""
         async with self._lock:
@@ -51,7 +83,7 @@ class FrameTV:
                 return
 
             try:
-                content_id = await asyncio.to_thread(
+                content_id = await self._call(
                     self._art.upload,
                     data,
                     matte=self.matte,
@@ -65,7 +97,7 @@ class FrameTV:
             log.info("Frame TV upload complete: content_id=%s", content_id)
 
             try:
-                await asyncio.to_thread(self._art.select_image, content_id, None, True)
+                await self._call(self._art.select_image, content_id, None, True)
             except Exception:
                 log.exception("Frame TV select_image failed for %s", content_id)
                 return
@@ -74,13 +106,13 @@ class FrameTV:
             # while the TV is already in art mode hangs forever waiting for an
             # ack the TV never sends.
             try:
-                current = await asyncio.to_thread(self._art.get_artmode)
+                current = await self._call(self._art.get_artmode)
             except Exception:
                 log.exception("Frame TV get_artmode failed")
                 current = None
             if current != "on":
                 try:
-                    await asyncio.to_thread(self._art.set_artmode, True)
+                    await self._call(self._art.set_artmode, True)
                 except Exception:
                     log.exception("Frame TV set_artmode failed")
                     # Keep going — the image is selected even if the mode toggle failed.
@@ -91,7 +123,7 @@ class FrameTV:
             self._last_content_id = content_id
             if prev and prev != content_id:
                 try:
-                    await asyncio.to_thread(self._art.delete, prev)
+                    await self._call(self._art.delete, prev)
                     log.info("Frame TV deleted previous upload: %s", prev)
                 except Exception:
                     log.warning("Frame TV delete of previous upload %s failed", prev, exc_info=True)
