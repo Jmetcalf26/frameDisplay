@@ -43,6 +43,12 @@ display:
   #   "#rrggbb"    — explicit hex color
   # Changing this invalidates the composed-image cache automatically.
   background: "black"
+  # Font family for the title/artist text. One of:
+  #   "sans"  — sans-serif (DejaVu Sans Bold / Helvetica / Arial)
+  #   "serif" — serif (DejaVu Serif Bold / Georgia / Times New Roman)
+  #   "mono"  — monospace (DejaVu Sans Mono Bold / Menlo / Courier New)
+  # Changing this also invalidates the composed-image cache.
+  font: "sans"
 
 preview:
   enabled: true               # false = no HTTP server at all (headless)

@@ -116,16 +116,19 @@ class FrameDisplayApp:
         if not composed_dir.is_absolute():
             composed_dir = PROJECT_ROOT / composed_dir
         background = display_cfg.get("background", "black")
+        font = display_cfg.get("font", "sans")
         self.composer = Composer(
             orientation=self.orientation,
             output_dir=composed_dir,
             background=background,
+            font=font,
         )
         log.info(
-            "Composer: %s (%s, background=%s)",
+            "Composer: %s (%s, background=%s, font=%s)",
             composed_dir,
             self.orientation,
             background,
+            font,
         )
 
         tv_cfg = config.get("tv", {})

@@ -13,23 +13,58 @@ log = logging.getLogger("framedisplay")
 LANDSCAPE = (3840, 2160)
 PORTRAIT = (2160, 3840)
 
-# Common truetype font locations. First hit wins; if none exist we fall back
-# to Pillow's tiny bitmap default (ugly but keeps the composer working).
-_FONT_PATHS = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/System/Library/Fonts/Helvetica.ttc",
-    "/Library/Fonts/Arial.ttf",
-]
+# Truetype font candidates per family. First hit wins on each system; if
+# none exist we fall back to Pillow's tiny bitmap default (ugly but keeps
+# the composer working). Bold variants are preferred so the title reads at
+# TV-viewing distance.
+_FONT_FAMILIES: dict[str, list[str]] = {
+    "sans": [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/Library/Fonts/Arial Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ],
+    "serif": [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Georgia Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Times New Roman Bold.ttf",
+        "/Library/Fonts/Georgia.ttf",
+        "/Library/Fonts/Times New Roman.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+    ],
+    "mono": [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
+        "/System/Library/Fonts/Menlo.ttc",
+        "/System/Library/Fonts/Supplemental/Courier New Bold.ttf",
+        "/Library/Fonts/Courier New.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    ],
+}
 
 
-def _load_font(size: int):
-    for path in _FONT_PATHS:
+def _validate_font_family(family: str) -> str:
+    f = family.strip().lower()
+    if f not in _FONT_FAMILIES:
+        raise ValueError(
+            f"display.font must be one of {sorted(_FONT_FAMILIES)} (got {family!r})"
+        )
+    return f
+
+
+def _load_font(size: int, family: str = "sans"):
+    for path in _FONT_FAMILIES.get(family, _FONT_FAMILIES["sans"]):
         try:
             return ImageFont.truetype(path, size=size)
         except OSError:
             continue
-    log.warning("No truetype font found; falling back to default bitmap font")
+    log.warning(
+        "No truetype font found for family %r; falling back to default bitmap font",
+        family,
+    )
     return ImageFont.load_default()
 
 
@@ -47,6 +82,7 @@ def _fit_font(
     text: str,
     max_width: int,
     max_size: int,
+    family: str = "sans",
     step: int = 4,
 ):
     """Return the largest font (down to ~max_size/3) at which ``text`` fits
@@ -55,14 +91,14 @@ def _fit_font(
     — it'll clip, but that's better than the title silently disappearing."""
     min_size = max(40, max_size // 3)
     if not text:
-        return _load_font(max_size)
+        return _load_font(max_size, family)
     size = max_size
     while size > min_size:
-        font = _load_font(size)
+        font = _load_font(size, family)
         if draw.textlength(text, font=font) <= max_width:
             return font
         size -= step
-    return _load_font(min_size)
+    return _load_font(min_size, family)
 
 
 def _relative_luminance(rgb: tuple[int, int, int]) -> float:
@@ -139,6 +175,7 @@ class Composer:
         orientation: str,
         output_dir: pathlib.Path,
         background: str = "black",
+        font: str = "sans",
     ):
         orientation = orientation.lower()
         if orientation not in ("landscape", "portrait"):
@@ -157,12 +194,17 @@ class Composer:
         else:
             self.background_key = self.background_mode  # "auto" or "corners"
 
+        self.font_family = _validate_font_family(font)
+
     def output_path(self, track: TrackInfo) -> pathlib.Path:
         # Composed images are per-track (artist + title) because the image
         # bakes in the song title — two songs off the same album need two
-        # different composed files. Background mode is mixed in so toggling
-        # it produces fresh files instead of serving stale ones.
-        key_input = f"{track.display_key}|bg={self.background_key}"
+        # different composed files. Background mode and font family are
+        # mixed in so toggling them produces fresh files instead of serving
+        # stale ones.
+        key_input = (
+            f"{track.display_key}|bg={self.background_key}|font={self.font_family}"
+        )
         key = hashlib.sha256(key_input.encode("utf-8")).hexdigest()[:16]
         return self.output_dir / f"{key}-{self.orientation}.jpg"
 
@@ -208,8 +250,8 @@ class Composer:
         text_width = text_right - text_x
 
         title = track.title or ""
-        title_font = _fit_font(draw, title, text_width, max_size=160)
-        artist_font = _load_font(100)
+        title_font = _fit_font(draw, title, text_width, max_size=160, family=self.font_family)
+        artist_font = _load_font(100, self.font_family)
         artist = _truncate(draw, track.artist or "", artist_font, text_width)
 
         title_color, artist_color = _text_colors_for(bg)
@@ -243,8 +285,8 @@ class Composer:
         text_top = cover_y + cover_size + 240
 
         title = track.title or ""
-        title_font = _fit_font(draw, title, text_width, max_size=180)
-        artist_font = _load_font(120)
+        title_font = _fit_font(draw, title, text_width, max_size=180, family=self.font_family)
+        artist_font = _load_font(120, self.font_family)
         artist = _truncate(draw, track.artist or "", artist_font, text_width)
 
         title_color, artist_color = _text_colors_for(bg)
