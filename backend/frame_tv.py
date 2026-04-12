@@ -60,15 +60,19 @@ class FrameTV:
         The samsungtvws client opens its websocket lazily and reuses it. If
         the TV (or a NAT in between) drops the connection during an idle
         period, the next call hits BrokenPipeError on the first send. We
-        catch that, close the underlying connection so samsungtvws will
-        re-open it, and retry the call once.
+        catch that, close the art websocket so samsungtvws will re-open it,
+        and retry the call once.
+
+        Note: ``self._art`` is a SamsungTVArt instance with its OWN
+        connection, separate from ``self._tv``'s. Closing ``self._tv`` does
+        nothing for the art API, so we must close ``self._art`` here.
         """
         try:
             return await asyncio.to_thread(fn, *args, **kwargs)
         except _RECONNECT_ERRORS as e:
             log.warning("Frame TV call %s failed (%s); reconnecting and retrying", fn.__name__, e)
             try:
-                await asyncio.to_thread(self._tv.close)
+                await asyncio.to_thread(self._art.close)
             except Exception:
                 log.debug("Frame TV close during reconnect failed", exc_info=True)
             return await asyncio.to_thread(fn, *args, **kwargs)
@@ -129,6 +133,10 @@ class FrameTV:
                     log.warning("Frame TV delete of previous upload %s failed", prev, exc_info=True)
 
     async def close(self) -> None:
+        try:
+            await asyncio.to_thread(self._art.close)
+        except Exception:
+            log.exception("Frame TV art close failed")
         try:
             await asyncio.to_thread(self._tv.close)
         except Exception:
