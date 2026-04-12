@@ -144,6 +144,25 @@ class FrameDisplayApp:
                 "display.genre_font requires Discogs to be enabled "
                 "(set discogs.enabled: true with valid credentials)"
             )
+        idle_image_cfg = display_cfg.get("idle_image")
+        if idle_image_cfg:
+            idle_path = pathlib.Path(idle_image_cfg)
+            if not idle_path.is_absolute():
+                idle_path = PROJECT_ROOT / idle_path
+            if not idle_path.exists():
+                raise ValueError(
+                    f"display.idle_image points to a missing file: {idle_path}"
+                )
+            self.idle_image_path: pathlib.Path | None = idle_path
+            self.idle_timeout: float = float(display_cfg.get("idle_timeout", 300))
+            log.info(
+                "Idle fallback: %s after %.0fs without a match",
+                idle_path, self.idle_timeout,
+            )
+        else:
+            self.idle_image_path = None
+            self.idle_timeout = 0.0
+
         layout = display_cfg.get("layout", "standard")
         self.composer = Composer(
             orientation=self.orientation,
@@ -187,6 +206,9 @@ class FrameDisplayApp:
         self._current_audio_start: float = 0.0
         # Serialize shazamio calls — concurrent recognize() calls can race / corrupt state
         self._recognize_lock = asyncio.Lock()
+        # Idle fallback bookkeeping.
+        self._last_identified_at: float = time.monotonic()
+        self._idle_active: bool = False
 
     async def start(self):
         preview_cfg = self.config.get("preview", {})
@@ -356,6 +378,8 @@ class FrameDisplayApp:
         self._current_audio_end = audio_end_time
         self._current_audio_start = audio_start_time
         self.state = DisplayState.IDENTIFIED
+        self._last_identified_at = time.monotonic()
+        self._idle_active = False
         log.info("[%s] Now playing: %s - %s", label, track.artist, track.title)
         await self._display_track(track, label)
 
@@ -432,6 +456,8 @@ class FrameDisplayApp:
         self._current_audio_end = now
         self._current_audio_start = now
         self.state = DisplayState.IDENTIFIED
+        self._last_identified_at = now
+        self._idle_active = False
         await self._display_track(track, label)
 
     async def _display_track(self, track: TrackInfo, label: str) -> None:
@@ -457,6 +483,30 @@ class FrameDisplayApp:
 
         if self.frame_tv is not None:
             await self.frame_tv.upload_and_display(composed_path)
+
+    async def _maybe_show_idle(self) -> None:
+        """If no track has been identified in the configured timeout, switch
+        the display to the idle fallback image. No-op once idle is active
+        (successful identification flips it back off)."""
+        if self.idle_image_path is None or self._idle_active:
+            return
+        elapsed = time.monotonic() - self._last_identified_at
+        if elapsed < self.idle_timeout:
+            return
+
+        log.info(
+            "Idle fallback: %.0fs since last match, showing %s",
+            elapsed, self.idle_image_path,
+        )
+        self._current_composed_path = self.idle_image_path
+        self._idle_active = True
+        self.current_track = None
+        self.state = DisplayState.LISTENING
+        if self.frame_tv is not None:
+            try:
+                await self.frame_tv.upload_and_display(self.idle_image_path)
+            except Exception:
+                log.exception("Idle fallback: upload_and_display failed")
 
     async def _listen_loop(self):
         audio_cfg = self.config.get("audio", {})
@@ -519,6 +569,8 @@ class FrameDisplayApp:
 
             except Exception:
                 log.exception("Error in listen loop")
+
+            await self._maybe_show_idle()
 
             loop_elapsed = time.monotonic() - loop_start
             if interval:

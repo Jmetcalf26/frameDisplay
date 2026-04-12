@@ -80,6 +80,12 @@ display:
   #   Country / Folk / Bluegrass -> traditional slab (American Typewriter)
   # Falls back to display.font when no genre matches or Discogs is disabled.
   genre_font: false
+  # Fallback shown when no track has been identified for a while. Useful for
+  # keeping a nice image on the Frame when nobody's playing music. Set
+  # idle_image to null (or omit it) to disable. Must be a JPEG pre-sized for
+  # your Frame — the file is uploaded to the TV as-is, no recomposition.
+  idle_image: null            # e.g. "cache/idle.jpg"
+  idle_timeout: 300           # seconds of silence before the image kicks in
 
 preview:
   enabled: true               # false = no HTTP server at all (headless)
