@@ -557,7 +557,15 @@ class Composer:
         """
         with Image.open(cover_path) as src:
             cover = src.convert("RGB")
-        cover.thumbnail((size, size), Image.Resampling.LANCZOS)
+        # Fit the cover to the target size preserving aspect ratio, scaling
+        # up or down as needed. Pillow's thumbnail() only ever downsizes,
+        # which left smaller sources (e.g. Spotify's 640x640 cap or a low-res
+        # CAA scan) floating in a large background-colored box.
+        ratio = min(size / cover.width, size / cover.height)
+        if ratio != 1.0:
+            new_w = max(1, round(cover.width * ratio))
+            new_h = max(1, round(cover.height * ratio))
+            cover = cover.resize((new_w, new_h), Image.Resampling.LANCZOS)
         unpadded = cover
 
         bg = self._background_for(cover)
