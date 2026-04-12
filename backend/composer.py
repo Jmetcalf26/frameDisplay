@@ -2,7 +2,7 @@ import hashlib
 import logging
 import pathlib
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from backend.models import TrackInfo
 
@@ -134,9 +134,11 @@ def _parse_background(value) -> tuple[str, tuple[int, int, int] | None]:
 
     Returns (mode, color) where mode is one of ``"auto"`` (average color of
     the whole album image), ``"corners"`` (average of the four corner
-    pixels), or ``"color"`` (use the returned RGB tuple). Accepted forms:
+    pixels), ``"blur"`` (a heavily blurred, canvas-filling copy of the
+    album art), or ``"color"`` (use the returned RGB tuple). Accepted forms:
       - ``"auto"``                — average color of the album image
       - ``"corners"``             — average of the four corner pixels
+      - ``"blur"``                — blurred album art fills the canvas
       - ``"black"`` / ``"white"`` — convenience aliases
       - ``"#rrggbb"``             — explicit hex color
     """
@@ -149,6 +151,8 @@ def _parse_background(value) -> tuple[str, tuple[int, int, int] | None]:
         return ("auto", None)
     if v == "corners":
         return ("corners", None)
+    if v == "blur":
+        return ("blur", None)
     if v == "black":
         return ("color", (0, 0, 0))
     if v == "white":
@@ -162,8 +166,8 @@ def _parse_background(value) -> tuple[str, tuple[int, int, int] | None]:
         except ValueError:
             pass
     raise ValueError(
-        f"display.background must be 'auto', 'corners', 'black', 'white', "
-        f"or '#rrggbb' (got {value!r})"
+        f"display.background must be 'auto', 'corners', 'blur', 'black', "
+        f"'white', or '#rrggbb' (got {value!r})"
     )
 
 
@@ -192,7 +196,7 @@ class Composer:
         if self.background_mode == "color":
             self.background_key = "%02x%02x%02x" % self.background_color
         else:
-            self.background_key = self.background_mode  # "auto" or "corners"
+            self.background_key = self.background_mode  # "auto", "corners", "blur"
 
         self.font_family = _validate_font_family(font)
 
@@ -219,12 +223,12 @@ class Composer:
             log.info("Composed image cache hit: %s", out.name)
             return out
 
-        cover, bg = self._prepare_cover(cover_path, 1920)
+        cover, cover_unpadded, bg = self._prepare_cover(cover_path, 1920)
 
         if self.orientation == "landscape":
-            img = self._compose_landscape(track, cover, bg)
+            img = self._compose_landscape(track, cover, cover_unpadded, bg)
         else:
-            img = self._compose_portrait(track, cover, bg)
+            img = self._compose_portrait(track, cover, cover_unpadded, bg)
 
         img.save(out, format="JPEG", quality=90)
         log.info("Composed image saved: %s", out)
@@ -233,10 +237,14 @@ class Composer:
     # ----- layouts -----
 
     def _compose_landscape(
-        self, track: TrackInfo, cover: Image.Image, bg: tuple[int, int, int]
+        self,
+        track: TrackInfo,
+        cover: Image.Image,
+        cover_unpadded: Image.Image,
+        bg: tuple[int, int, int],
     ) -> Image.Image:
         w, h = LANDSCAPE
-        img = Image.new("RGB", (w, h), bg)
+        img = self._make_canvas((w, h), cover_unpadded, bg)
         draw = ImageDraw.Draw(img)
 
         cover_size = cover.width
@@ -269,10 +277,14 @@ class Composer:
         return img
 
     def _compose_portrait(
-        self, track: TrackInfo, cover: Image.Image, bg: tuple[int, int, int]
+        self,
+        track: TrackInfo,
+        cover: Image.Image,
+        cover_unpadded: Image.Image,
+        bg: tuple[int, int, int],
     ) -> Image.Image:
         w, h = PORTRAIT
-        img = Image.new("RGB", (w, h), bg)
+        img = self._make_canvas((w, h), cover_unpadded, bg)
         draw = ImageDraw.Draw(img)
 
         cover_size = cover.width
@@ -303,13 +315,20 @@ class Composer:
 
     def _prepare_cover(
         self, cover_path: pathlib.Path, size: int
-    ) -> tuple[Image.Image, tuple[int, int, int]]:
-        """Load the album image, resize to ``size``, and return it together
-        with the background color to use behind it. Non-square covers are
-        padded to a square with the same background so the seams disappear."""
+    ) -> tuple[Image.Image, Image.Image, tuple[int, int, int]]:
+        """Load the album image, resize to fit ``size``, and return:
+
+        - the *padded* square cover (used for compositing onto the canvas)
+        - the *unpadded* cover (preserves the source aspect — used as the
+          blur source so non-square covers don't bleed black/colored bands
+          into the canvas edges)
+        - the background fill color (used for non-blur canvases and for the
+          square padding so seams disappear)
+        """
         with Image.open(cover_path) as src:
             cover = src.convert("RGB")
         cover.thumbnail((size, size), Image.Resampling.LANCZOS)
+        unpadded = cover
 
         bg = self._background_for(cover)
 
@@ -318,10 +337,13 @@ class Composer:
             off = ((size - cover.width) // 2, (size - cover.height) // 2)
             padded.paste(cover, off)
             cover = padded
-        return cover, bg
+        return cover, unpadded, bg
 
     def _background_for(self, cover: Image.Image) -> tuple[int, int, int]:
-        if self.background_mode == "auto":
+        # In blur mode the canvas is the blurred album art, but we still
+        # need a representative color for cover-padding seams and for the
+        # title/artist contrast picker. Average is the safest choice.
+        if self.background_mode in ("auto", "blur"):
             # Resizing to 1x1 with LANCZOS averages all pixels into a single
             # color — cheaper and more accurate than walking the histogram.
             small = cover.resize((1, 1), Image.Resampling.LANCZOS)
@@ -343,3 +365,33 @@ class Composer:
             b = sum(c[2] for c in corners) // 4
             return (r, g, b)
         return self.background_color  # type: ignore[return-value]
+
+    def _make_canvas(
+        self,
+        size: tuple[int, int],
+        cover_unpadded: Image.Image,
+        fill: tuple[int, int, int],
+    ) -> Image.Image:
+        """Build the background canvas: blurred album art in 'blur' mode,
+        otherwise a solid ``fill`` color."""
+        if self.background_mode == "blur":
+            return self._blurred_canvas(cover_unpadded, size)
+        return Image.new("RGB", size, fill)
+
+    def _blurred_canvas(
+        self, cover_unpadded: Image.Image, size: tuple[int, int]
+    ) -> Image.Image:
+        """Scale the album art to fully cover ``size`` (object-fit: cover),
+        center-crop, then apply a heavy gaussian blur."""
+        w, h = size
+        cw, ch = cover_unpadded.size
+        scale = max(w / cw, h / ch)
+        nw = max(1, round(cw * scale))
+        nh = max(1, round(ch * scale))
+        big = cover_unpadded.resize((nw, nh), Image.Resampling.LANCZOS)
+        left = (nw - w) // 2
+        top = (nh - h) // 2
+        cropped = big.crop((left, top, left + w, top + h))
+        # radius is in pixels — at 3840px wide a radius of 80 obliterates
+        # all detail without going so soft that the colors smear into mud.
+        return cropped.filter(ImageFilter.GaussianBlur(radius=80))

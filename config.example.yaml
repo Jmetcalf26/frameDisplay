@@ -35,11 +35,12 @@ tv:
 display:
   orientation: "landscape"    # "landscape" or "portrait"
   composed_dir: "cache/composed"  # where composed JPEGs are written/cached
-  # Background color behind the album art and text. One of:
+  # Background behind the album art and text. One of:
   #   "black"      — solid black (default)
   #   "white"      — solid white
   #   "auto"       — average color of the entire album image
   #   "corners"    — average of the four corner pixels of the album image
+  #   "blur"       — heavily blurred copy of the album art fills the canvas
   #   "#rrggbb"    — explicit hex color
   # Changing this invalidates the composed-image cache automatically.
   background: "black"
