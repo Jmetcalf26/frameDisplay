@@ -115,8 +115,18 @@ class FrameDisplayApp:
         composed_dir = pathlib.Path(display_cfg.get("composed_dir", "cache/composed"))
         if not composed_dir.is_absolute():
             composed_dir = PROJECT_ROOT / composed_dir
-        self.composer = Composer(orientation=self.orientation, output_dir=composed_dir)
-        log.info("Composer: %s (%s)", composed_dir, self.orientation)
+        background = display_cfg.get("background", "black")
+        self.composer = Composer(
+            orientation=self.orientation,
+            output_dir=composed_dir,
+            background=background,
+        )
+        log.info(
+            "Composer: %s (%s, background=%s)",
+            composed_dir,
+            self.orientation,
+            background,
+        )
 
         tv_cfg = config.get("tv", {})
         if tv_cfg.get("enabled"):
