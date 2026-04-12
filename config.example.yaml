@@ -23,6 +23,23 @@ acoustid:
   api_key: "YOUR_KEY_HERE"    # register at https://acoustid.org/api-key
   min_score: 0.5              # reject matches below this confidence (0-1)
 
+spotify:
+  # When enabled, each listen-loop cycle polls Spotify first. If you're
+  # actively playing something, that track is used and audio recording
+  # is skipped entirely for that cycle.
+  #
+  # One-time setup:
+  #   1. Create a Spotify app at https://developer.spotify.com/dashboard
+  #   2. Add http://127.0.0.1:8888/callback as a Redirect URI
+  #   3. Run: python scripts/spotify_auth.py \
+  #          --client-id YOUR_ID --client-secret YOUR_SECRET
+  #      This writes a refresh token to the token_file below.
+  enabled: false
+  client_id: "YOUR_CLIENT_ID"
+  client_secret: "YOUR_CLIENT_SECRET"
+  token_file: "cache/spotify-token.txt"
+  poll_interval: 5            # seconds between polls while Spotify is active
+
 tv:
   enabled: true
   host: "192.168.1.100"

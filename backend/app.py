@@ -14,6 +14,7 @@ from backend.frame_tv import FrameTV
 from backend.image_cache import ImageCache
 from backend.models import DisplayState, TrackInfo
 from backend.recognizer import Recognizer
+from backend.spotify_client import SpotifyClient
 
 log = logging.getLogger("framedisplay")
 
@@ -65,6 +66,25 @@ class FrameDisplayApp:
             log.info("AcoustID fallback enabled (min_score=%.2f)", self.acoustid.min_score)
         else:
             self.acoustid = None
+
+        spotify_cfg = config.get("spotify", {})
+        self.spotify_poll_interval = spotify_cfg.get("poll_interval", 5)
+        if (
+            spotify_cfg.get("enabled")
+            and spotify_cfg.get("client_id")
+            and spotify_cfg.get("client_secret")
+        ):
+            token_file = pathlib.Path(spotify_cfg.get("token_file", "cache/spotify-token.txt"))
+            if not token_file.is_absolute():
+                token_file = PROJECT_ROOT / token_file
+            self.spotify: SpotifyClient | None = SpotifyClient(
+                client_id=spotify_cfg["client_id"],
+                client_secret=spotify_cfg["client_secret"],
+                token_file=token_file,
+            )
+            log.info("Spotify poller enabled (poll_interval=%ds)", self.spotify_poll_interval)
+        else:
+            self.spotify = None
 
         if cache is not None:
             self.cache = cache
@@ -212,6 +232,9 @@ class FrameDisplayApp:
         if self.frame_tv is not None:
             await self.frame_tv.close()
             log.info("Closed Frame TV client")
+        if self.spotify is not None:
+            await self.spotify.close()
+            log.info("Closed Spotify client")
 
     async def _preview_index(self, _request):
         return aiohttp.web.Response(text=_PREVIEW_HTML, content_type="text/html")
@@ -335,6 +358,64 @@ class FrameDisplayApp:
         log.info("[%s] Now playing: %s - %s", label, track.artist, track.title)
         await self._display_track(track, label)
 
+    async def _handle_spotify_track(self, track: TrackInfo) -> None:
+        """Commit a track reported by Spotify. Reuses the enrich + display pipeline.
+
+        Spotify is treated as always-fresh: we bump the audio-end timestamp to
+        now so that any in-flight Shazam result with older audio is correctly
+        rejected as stale by _handle_recognition.
+        """
+        label = "spotify"
+        now = time.monotonic()
+
+        async with self._recognize_lock:
+            if (
+                self.current_track
+                and track.display_key == self.current_track.display_key
+            ):
+                # Already showing this track — bump freshness so late Shazam
+                # results from the previous track's audio get rejected as stale.
+                self._current_audio_end = now
+                self._current_audio_start = now
+                return
+
+            log.info("[%s] Now playing via Spotify: %s - %s", label, track.artist, track.title)
+            self.current_track = track
+            self._current_audio_end = now
+            self._current_audio_start = now
+
+        cached = self.cache.get(track.display_key) if self.cache is not None else None
+        if cached is not None:
+            log.info("[%s] Track cache hit for %s", label, track.display_key)
+            track = cached
+        else:
+            if self.discogs:
+                log.info("[%s] Enriching via Discogs...", label)
+                discogs_start = time.monotonic()
+                track = await self.discogs.enrich(track)
+                log.info("[%s] Discogs done (%.1fs)", label, time.monotonic() - discogs_start)
+
+            if self.cache is not None:
+                self.cache.put(track.display_key, track)
+                log.info(
+                    "[%s] Cached %s (track cache: %d entries, %d bytes)",
+                    label,
+                    track.display_key,
+                    len(self.cache),
+                    self.cache.size_bytes(),
+                )
+
+        if self.image_cache is not None and track.album:
+            source = track.cover_url or track.cover_url_hires
+            if source and not source.startswith(ImageCache.URL_PREFIX):
+                await self.image_cache.ensure(track.artist, track.album, source)
+
+        self.current_track = track
+        self._current_audio_end = now
+        self._current_audio_start = now
+        self.state = DisplayState.IDENTIFIED
+        await self._display_track(track, label)
+
     async def _display_track(self, track: TrackInfo, label: str) -> None:
         """Compose the TV image for the track and push it to the Frame."""
         if self.image_cache is None or not track.album:
@@ -380,6 +461,21 @@ class FrameDisplayApp:
 
         while True:
             loop_start = time.monotonic()
+
+            if self.spotify is not None:
+                try:
+                    spotify_track = await self.spotify.get_currently_playing()
+                except Exception:
+                    log.exception("Spotify poll crashed")
+                    spotify_track = None
+                if spotify_track is not None:
+                    try:
+                        await self._handle_spotify_track(spotify_track)
+                    except Exception:
+                        log.exception("Spotify track handling crashed")
+                    await asyncio.sleep(self.spotify_poll_interval)
+                    continue
+
             try:
                 log.info("Recording %ds (snapshots at %s)...", total_duration, snapshot_durations)
 
