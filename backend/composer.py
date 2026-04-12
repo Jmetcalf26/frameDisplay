@@ -134,10 +134,12 @@ def _parse_background(value) -> tuple[str, tuple[int, int, int] | None]:
 
     Returns (mode, color) where mode is one of ``"auto"`` (average color of
     the whole album image), ``"corners"`` (average of the four corner
-    pixels), ``"blur"`` (a heavily blurred, canvas-filling copy of the
-    album art), or ``"color"`` (use the returned RGB tuple). Accepted forms:
+    pixels), ``"mode"`` (most common color in the album image),
+    ``"blur"`` (a heavily blurred, canvas-filling copy of the album art),
+    or ``"color"`` (use the returned RGB tuple). Accepted forms:
       - ``"auto"``                — average color of the album image
       - ``"corners"``             — average of the four corner pixels
+      - ``"mode"``                — most common (dominant) color
       - ``"blur"``                — blurred album art fills the canvas
       - ``"black"`` / ``"white"`` — convenience aliases
       - ``"#rrggbb"``             — explicit hex color
@@ -151,6 +153,8 @@ def _parse_background(value) -> tuple[str, tuple[int, int, int] | None]:
         return ("auto", None)
     if v == "corners":
         return ("corners", None)
+    if v == "mode":
+        return ("mode", None)
     if v == "blur":
         return ("blur", None)
     if v == "black":
@@ -166,8 +170,8 @@ def _parse_background(value) -> tuple[str, tuple[int, int, int] | None]:
         except ValueError:
             pass
     raise ValueError(
-        f"display.background must be 'auto', 'corners', 'blur', 'black', "
-        f"'white', or '#rrggbb' (got {value!r})"
+        f"display.background must be 'auto', 'corners', 'mode', 'blur', "
+        f"'black', 'white', or '#rrggbb' (got {value!r})"
     )
 
 
@@ -363,6 +367,17 @@ class Composer:
             r = sum(c[0] for c in corners) // 4
             g = sum(c[1] for c in corners) // 4
             b = sum(c[2] for c in corners) // 4
+            return (r, g, b)
+        if self.background_mode == "mode":
+            # Quantize the cover to 16 color clusters, then pick the one
+            # with the most pixels — the dominant color.
+            small = cover.resize((200, 200), Image.Resampling.LANCZOS)
+            quantized = small.quantize(colors=16, method=Image.Quantize.MEDIANCUT)
+            palette = quantized.getpalette()
+            most_count, most_idx = max(quantized.getcolors(), key=lambda x: x[0])
+            r = palette[most_idx * 3]
+            g = palette[most_idx * 3 + 1]
+            b = palette[most_idx * 3 + 2]
             return (r, g, b)
         return self.background_color  # type: ignore[return-value]
 

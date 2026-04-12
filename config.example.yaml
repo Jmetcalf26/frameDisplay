@@ -40,6 +40,7 @@ display:
   #   "white"      — solid white
   #   "auto"       — average color of the entire album image
   #   "corners"    — average of the four corner pixels of the album image
+  #   "mode"       — most common (dominant) color in the album image
   #   "blur"       — heavily blurred copy of the album art fills the canvas
   #   "#rrggbb"    — explicit hex color
   # Changing this invalidates the composed-image cache automatically.
