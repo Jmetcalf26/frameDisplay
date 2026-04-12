@@ -117,18 +117,21 @@ class FrameDisplayApp:
             composed_dir = PROJECT_ROOT / composed_dir
         background = display_cfg.get("background", "black")
         font = display_cfg.get("font", "sans")
+        genre_font = display_cfg.get("genre_font", False)
         self.composer = Composer(
             orientation=self.orientation,
             output_dir=composed_dir,
             background=background,
             font=font,
+            genre_font=genre_font,
         )
         log.info(
-            "Composer: %s (%s, background=%s, font=%s)",
+            "Composer: %s (%s, background=%s, font=%s, genre_font=%s)",
             composed_dir,
             self.orientation,
             background,
             font,
+            genre_font,
         )
 
         tv_cfg = config.get("tv", {})

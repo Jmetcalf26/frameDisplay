@@ -16,6 +16,7 @@ class TrackInfo:
     cover_url_hires: str | None = None
     year: str | None = None
     genre: str | None = None
+    style: str | None = None
     label: str | None = None
 
     @property

@@ -45,6 +45,169 @@ _FONT_FAMILIES: dict[str, list[str]] = {
     ],
 }
 
+# Genre-mood font candidates. Same first-hit-wins convention. These aim for
+# a distinct typographic feel per mood — the differences are subtle on Linux
+# (serif vs sans vs mono) but dramatic on macOS where display/script fonts
+# like Marker Felt, Didot, Futura, and American Typewriter are available.
+_GENRE_MOOD_FONTS: dict[str, list[str]] = {
+    "elegant": [
+        # Jazz, Classical, Soul, Blues — refined serif
+        "/System/Library/Fonts/Supplemental/Didot.ttc",
+        "/System/Library/Fonts/Supplemental/Georgia Bold.ttf",
+        "/usr/share/fonts/truetype/fonts-yrsa-rasa/Yrsa-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSerifBold.ttf",
+    ],
+    "gritty": [
+        # Punk, Metal, Grunge, Hardcore — raw / rough
+        "/System/Library/Fonts/Supplemental/Marker Felt.ttc",
+        "/System/Library/Fonts/Supplemental/Chalkduster.ttf",
+        "/usr/share/fonts/truetype/ubuntu/UbuntuMono-B.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeMonoBold.ttf",
+    ],
+    "modern": [
+        # Electronic, Techno, Ambient — clean / minimal
+        "/System/Library/Fonts/Supplemental/Futura.ttc",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/usr/share/fonts/truetype/ubuntu/Ubuntu-L.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+    ],
+    "heavy": [
+        # Hip Hop, Rap, Trap — bold / impactful
+        "/System/Library/Fonts/Supplemental/Impact.ttf",
+        "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+    ],
+    "traditional": [
+        # Country, Folk, Bluegrass — warm slab / typewriter
+        "/System/Library/Fonts/Supplemental/American Typewriter.ttc",
+        "/System/Library/Fonts/Supplemental/Courier New Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSerifBold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+    ],
+}
+
+# Map Discogs genre/style strings (lowercased) to mood keys.
+# Styles (more specific) are checked before genres so e.g. a "Rock" album
+# with style "Punk" resolves to "gritty" rather than falling through.
+_GENRE_MOOD_MAP: dict[str, str] = {
+    # --- Discogs top-level genres ---
+    "jazz": "elegant",
+    "classical": "elegant",
+    "blues": "elegant",
+    "funk / soul": "elegant",
+    "latin": "elegant",
+    "electronic": "modern",
+    "hip hop": "heavy",
+    "folk, world, & country": "traditional",
+    "reggae": "traditional",
+    # "Rock" and "Pop" intentionally omitted — too broad to pick a mood.
+
+    # --- Discogs styles (granular) ---
+    # elegant
+    "soul": "elegant",
+    "neo soul": "elegant",
+    "r&b": "elegant",
+    "rhythm & blues": "elegant",
+    "swing": "elegant",
+    "bossa nova": "elegant",
+    "big band": "elegant",
+    "contemporary jazz": "elegant",
+    "smooth jazz": "elegant",
+    "free jazz": "elegant",
+    "hard bop": "elegant",
+    "cool jazz": "elegant",
+    "fusion": "elegant",
+    "opera": "elegant",
+    "baroque": "elegant",
+    "romantic": "elegant",
+    "modern classical": "elegant",
+    # gritty
+    "punk": "gritty",
+    "punk rock": "gritty",
+    "post-punk": "gritty",
+    "hardcore": "gritty",
+    "grunge": "gritty",
+    "metal": "gritty",
+    "heavy metal": "gritty",
+    "death metal": "gritty",
+    "black metal": "gritty",
+    "thrash metal": "gritty",
+    "doom metal": "gritty",
+    "sludge metal": "gritty",
+    "stoner rock": "gritty",
+    "industrial": "gritty",
+    "noise": "gritty",
+    "noise rock": "gritty",
+    "grindcore": "gritty",
+    "metalcore": "gritty",
+    "mathcore": "gritty",
+    "crust": "gritty",
+    "oi": "gritty",
+    # modern
+    "house": "modern",
+    "deep house": "modern",
+    "tech house": "modern",
+    "techno": "modern",
+    "ambient": "modern",
+    "trance": "modern",
+    "drum n bass": "modern",
+    "dubstep": "modern",
+    "idm": "modern",
+    "synth-pop": "modern",
+    "electro": "modern",
+    "minimal": "modern",
+    "downtempo": "modern",
+    "trip hop": "modern",
+    "future bass": "modern",
+    "vaporwave": "modern",
+    "synthwave": "modern",
+    "new wave": "modern",
+    # heavy
+    "trap": "heavy",
+    "gangsta": "heavy",
+    "grime": "heavy",
+    "boom bap": "heavy",
+    "conscious": "heavy",
+    "g-funk": "heavy",
+    "rap": "heavy",
+    "crunk": "heavy",
+    "dirty south": "heavy",
+    # traditional
+    "country": "traditional",
+    "folk": "traditional",
+    "folk rock": "traditional",
+    "bluegrass": "traditional",
+    "americana": "traditional",
+    "country rock": "traditional",
+    "singer-songwriter": "traditional",
+}
+
+
+def _genre_to_mood(genre: str | None, style: str | None) -> str | None:
+    """Map Discogs genre/style to a font mood.
+
+    Styles are checked first (more specific), then genres. First match
+    from the comma-separated list wins. Returns ``None`` when nothing
+    matches so the caller falls back to the configured ``display.font``.
+    """
+    for source in (style, genre):
+        if not source:
+            continue
+        for part in source.split(","):
+            key = part.strip().lower()
+            if key in _GENRE_MOOD_MAP:
+                return _GENRE_MOOD_MAP[key]
+    return None
+
 
 def _validate_font_family(family: str) -> str:
     f = family.strip().lower()
@@ -56,7 +219,11 @@ def _validate_font_family(family: str) -> str:
 
 
 def _load_font(size: int, family: str = "sans"):
-    for path in _FONT_FAMILIES.get(family, _FONT_FAMILIES["sans"]):
+    paths = (
+        _GENRE_MOOD_FONTS.get(family)
+        or _FONT_FAMILIES.get(family, _FONT_FAMILIES["sans"])
+    )
+    for path in paths:
         try:
             return ImageFont.truetype(path, size=size)
         except OSError:
@@ -184,6 +351,7 @@ class Composer:
         output_dir: pathlib.Path,
         background: str = "black",
         font: str = "sans",
+        genre_font: bool = False,
     ):
         orientation = orientation.lower()
         if orientation not in ("landscape", "portrait"):
@@ -203,15 +371,30 @@ class Composer:
             self.background_key = self.background_mode  # "auto", "corners", "blur"
 
         self.font_family = _validate_font_family(font)
+        self.genre_font = genre_font
+
+    def _resolve_font(self, track: TrackInfo) -> str:
+        """Return the font family key to use for this track.
+
+        When ``genre_font`` is enabled, Discogs style/genre data is checked
+        against the mood map. If nothing matches (or genre_font is off),
+        falls back to the configured ``display.font``.
+        """
+        if self.genre_font:
+            mood = _genre_to_mood(track.genre, track.style)
+            if mood:
+                return mood
+        return self.font_family
 
     def output_path(self, track: TrackInfo) -> pathlib.Path:
         # Composed images are per-track (artist + title) because the image
         # bakes in the song title — two songs off the same album need two
-        # different composed files. Background mode and font family are
+        # different composed files. Background mode and resolved font are
         # mixed in so toggling them produces fresh files instead of serving
         # stale ones.
+        font_key = self._resolve_font(track)
         key_input = (
-            f"{track.display_key}|bg={self.background_key}|font={self.font_family}"
+            f"{track.display_key}|bg={self.background_key}|font={font_key}"
         )
         key = hashlib.sha256(key_input.encode("utf-8")).hexdigest()[:16]
         return self.output_dir / f"{key}-{self.orientation}.jpg"
@@ -227,12 +410,21 @@ class Composer:
             log.info("Composed image cache hit: %s", out.name)
             return out
 
+        font_key = self._resolve_font(track)
+        if self.genre_font and font_key != self.font_family:
+            log.info(
+                "Genre font: %s/%s -> %s mood",
+                track.genre or "?",
+                track.style or "?",
+                font_key,
+            )
+
         cover, cover_unpadded, bg = self._prepare_cover(cover_path, 1920)
 
         if self.orientation == "landscape":
-            img = self._compose_landscape(track, cover, cover_unpadded, bg)
+            img = self._compose_landscape(track, cover, cover_unpadded, bg, font_key)
         else:
-            img = self._compose_portrait(track, cover, cover_unpadded, bg)
+            img = self._compose_portrait(track, cover, cover_unpadded, bg, font_key)
 
         img.save(out, format="JPEG", quality=90)
         log.info("Composed image saved: %s", out)
@@ -246,6 +438,7 @@ class Composer:
         cover: Image.Image,
         cover_unpadded: Image.Image,
         bg: tuple[int, int, int],
+        font_key: str,
     ) -> Image.Image:
         w, h = LANDSCAPE
         img = self._make_canvas((w, h), cover_unpadded, bg)
@@ -262,8 +455,8 @@ class Composer:
         text_width = text_right - text_x
 
         title = track.title or ""
-        title_font = _fit_font(draw, title, text_width, max_size=160, family=self.font_family)
-        artist_font = _load_font(100, self.font_family)
+        title_font = _fit_font(draw, title, text_width, max_size=160, family=font_key)
+        artist_font = _load_font(100, font_key)
         artist = _truncate(draw, track.artist or "", artist_font, text_width)
 
         title_color, artist_color = _text_colors_for(bg)
@@ -286,6 +479,7 @@ class Composer:
         cover: Image.Image,
         cover_unpadded: Image.Image,
         bg: tuple[int, int, int],
+        font_key: str,
     ) -> Image.Image:
         w, h = PORTRAIT
         img = self._make_canvas((w, h), cover_unpadded, bg)
@@ -301,8 +495,8 @@ class Composer:
         text_top = cover_y + cover_size + 240
 
         title = track.title or ""
-        title_font = _fit_font(draw, title, text_width, max_size=180, family=self.font_family)
-        artist_font = _load_font(120, self.font_family)
+        title_font = _fit_font(draw, title, text_width, max_size=180, family=font_key)
+        artist_font = _load_font(120, font_key)
         artist = _truncate(draw, track.artist or "", artist_font, text_width)
 
         title_color, artist_color = _text_colors_for(bg)

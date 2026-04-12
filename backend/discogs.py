@@ -57,6 +57,7 @@ class DiscogsClient:
         release = results[0]
         track.year = release.get("year")
         track.genre = ", ".join(release.get("genre", []))
+        track.style = ", ".join(release.get("style", []))
         track.label = ", ".join(release.get("label", []))
 
         # Fetch full release details for high-res artwork
