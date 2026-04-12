@@ -68,9 +68,11 @@ def _fit_font(
 def _parse_background(value) -> tuple[str, tuple[int, int, int] | None]:
     """Parse a display.background config value.
 
-    Returns (mode, color) where mode is ``"auto"`` (use average album color)
-    or ``"color"`` (use the returned RGB tuple). Accepted forms:
+    Returns (mode, color) where mode is one of ``"auto"`` (average color of
+    the whole album image), ``"corners"`` (average of the four corner
+    pixels), or ``"color"`` (use the returned RGB tuple). Accepted forms:
       - ``"auto"``                — average color of the album image
+      - ``"corners"``             — average of the four corner pixels
       - ``"black"`` / ``"white"`` — convenience aliases
       - ``"#rrggbb"``             — explicit hex color
     """
@@ -81,6 +83,8 @@ def _parse_background(value) -> tuple[str, tuple[int, int, int] | None]:
     v = value.strip().lower()
     if v == "auto":
         return ("auto", None)
+    if v == "corners":
+        return ("corners", None)
     if v == "black":
         return ("color", (0, 0, 0))
     if v == "white":
@@ -94,8 +98,8 @@ def _parse_background(value) -> tuple[str, tuple[int, int, int] | None]:
         except ValueError:
             pass
     raise ValueError(
-        f"display.background must be 'auto', 'black', 'white', or '#rrggbb' "
-        f"(got {value!r})"
+        f"display.background must be 'auto', 'corners', 'black', 'white', "
+        f"or '#rrggbb' (got {value!r})"
     )
 
 
@@ -120,11 +124,10 @@ class Composer:
         self.background_mode, self.background_color = _parse_background(background)
         # Stable string mixed into the composed-image cache key so that
         # changing display.background invalidates old files automatically.
-        self.background_key = (
-            "auto"
-            if self.background_mode == "auto"
-            else "%02x%02x%02x" % self.background_color
-        )
+        if self.background_mode == "color":
+            self.background_key = "%02x%02x%02x" % self.background_color
+        else:
+            self.background_key = self.background_mode  # "auto" or "corners"
 
     def output_path(self, track: TrackInfo) -> pathlib.Path:
         # Composed images are per-track (artist + title) because the image
@@ -249,5 +252,20 @@ class Composer:
             # color — cheaper and more accurate than walking the histogram.
             small = cover.resize((1, 1), Image.Resampling.LANCZOS)
             r, g, b = small.getpixel((0, 0))[:3]
+            return (r, g, b)
+        if self.background_mode == "corners":
+            # Average the four corner pixels of the (already-resized) cover.
+            # Sampled before any square padding so we read the actual album
+            # corners, not the padding we'd be adding.
+            w, h = cover.size
+            corners = [
+                cover.getpixel((0, 0)),
+                cover.getpixel((w - 1, 0)),
+                cover.getpixel((0, h - 1)),
+                cover.getpixel((w - 1, h - 1)),
+            ]
+            r = sum(c[0] for c in corners) // 4
+            g = sum(c[1] for c in corners) // 4
+            b = sum(c[2] for c in corners) // 4
             return (r, g, b)
         return self.background_color  # type: ignore[return-value]
