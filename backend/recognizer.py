@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 
@@ -9,6 +10,7 @@ from backend.models import TrackInfo
 log = logging.getLogger("framedisplay")
 
 APPLE_MUSIC_SUFFIXES = ["cc", "bb", "sr"]
+ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
 
 
 class Recognizer:
@@ -70,6 +72,57 @@ class Recognizer:
 
         log.info("All Apple Music variants failed, using original: %s", url)
         return url
+
+
+async def itunes_lookup_cover(artist: str, album: str) -> str | None:
+    """Look up an album on the iTunes Search API and return its raw artwork URL.
+
+    Returns the `artworkUrl100` field from the best-matching album result,
+    which is an Apple Music CDN URL that can be passed to resolve_cover()
+    to upgrade to a large size (3000x3000). Returns None on miss or error.
+    """
+    term = f"{artist} {album}".strip()
+    if not term:
+        return None
+
+    params = {"term": term, "entity": "album", "limit": "5"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(ITUNES_SEARCH_URL, params=params, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status != 200:
+                    log.info("iTunes search failed: %d", resp.status)
+                    return None
+                data = await resp.json(content_type=None)  # iTunes returns text/javascript
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        log.info("iTunes search network error")
+        return None
+
+    results = data.get("results", []) or []
+    if not results:
+        log.info("iTunes: no results for '%s'", term)
+        return None
+
+    artist_lc = artist.lower()
+    album_lc = album.lower()
+
+    def score(r: dict) -> tuple[int, int]:
+        a = (r.get("artistName") or "").lower()
+        c = (r.get("collectionName") or "").lower()
+        return (
+            1 if a == artist_lc else 0,
+            1 if c == album_lc else 0,
+        )
+
+    best = max(results, key=score)
+    url = best.get("artworkUrl100")
+    if not url:
+        return None
+    log.info(
+        "iTunes match: %s - %s",
+        best.get("artistName"),
+        best.get("collectionName"),
+    )
+    return url
 
 
 def _apple_music_candidates(url: str, size: int = 3000) -> list[str]:

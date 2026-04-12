@@ -13,7 +13,7 @@ from backend.discogs import DiscogsClient
 from backend.frame_tv import FrameTV
 from backend.image_cache import ImageCache
 from backend.models import DisplayState, TrackInfo
-from backend.recognizer import Recognizer
+from backend.recognizer import Recognizer, itunes_lookup_cover
 from backend.spotify_client import SpotifyClient
 
 log = logging.getLogger("framedisplay")
@@ -389,6 +389,17 @@ class FrameDisplayApp:
             log.info("[%s] Track cache hit for %s", label, track.display_key)
             track = cached
         else:
+            # Upgrade Spotify's 640x640 cover to 3000x3000 via iTunes Search.
+            if track.album:
+                itunes_start = time.monotonic()
+                itunes_url = await itunes_lookup_cover(track.artist, track.album)
+                if itunes_url:
+                    track.cover_url = await self.recognizer.resolve_cover(itunes_url)
+                    log.info(
+                        "[%s] iTunes cover upgraded (%.1fs)",
+                        label, time.monotonic() - itunes_start,
+                    )
+
             if self.discogs:
                 log.info("[%s] Enriching via Discogs...", label)
                 discogs_start = time.monotonic()
