@@ -563,16 +563,48 @@ class Composer:
             b = sum(c[2] for c in corners) // 4
             return (r, g, b)
         if self.background_mode == "mode":
-            # Quantize the cover to 16 color clusters, then pick the one
-            # with the most pixels — the dominant color.
+            # Quantize to 16 clusters, then merge palette entries that are
+            # perceptually indistinguishable so a "black" background made
+            # up of (0,0,0) + (12,8,10) + (20,18,22) registers as one
+            # dominant group rather than three separate ones.
             small = cover.resize((200, 200), Image.Resampling.LANCZOS)
             quantized = small.quantize(colors=16, method=Image.Quantize.MEDIANCUT)
             palette = quantized.getpalette()
-            most_count, most_idx = max(quantized.getcolors(), key=lambda x: x[0])
-            r = palette[most_idx * 3]
-            g = palette[most_idx * 3 + 1]
-            b = palette[most_idx * 3 + 2]
-            return (r, g, b)
+            entries = [
+                (
+                    count,
+                    (palette[idx * 3], palette[idx * 3 + 1], palette[idx * 3 + 2]),
+                )
+                for count, idx in quantized.getcolors()
+            ]
+
+            # Greedy single-link clustering in RGB space. Threshold of 40
+            # (Euclidean distance) is tight enough to keep visually distinct
+            # shades apart but loose enough that photographic noise, jpeg
+            # artifacts, and gradient banding within a "single" color all
+            # fold together. Processing in descending count order makes
+            # heavy clusters absorb their small neighbors rather than the
+            # reverse.
+            threshold_sq = 40 * 40
+            clusters: list[tuple[int, tuple[int, int, int], int]] = []
+            for count, rgb in sorted(entries, key=lambda e: -e[0]):
+                merged = False
+                for i, (ctotal, crep, crep_count) in enumerate(clusters):
+                    dr, dg, db = rgb[0] - crep[0], rgb[1] - crep[1], rgb[2] - crep[2]
+                    if dr * dr + dg * dg + db * db <= threshold_sq:
+                        # Keep the representative from whichever original
+                        # entry has more pixels — the heavy side wins.
+                        new_rep, new_count = (
+                            (rgb, count) if count > crep_count else (crep, crep_count)
+                        )
+                        clusters[i] = (ctotal + count, new_rep, new_count)
+                        merged = True
+                        break
+                if not merged:
+                    clusters.append((count, rgb, count))
+
+            dominant_total, dominant_rgb, _ = max(clusters, key=lambda c: c[0])
+            return dominant_rgb
         return self.background_color  # type: ignore[return-value]
 
     def _make_canvas(
