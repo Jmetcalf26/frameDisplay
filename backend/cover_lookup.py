@@ -1,28 +1,28 @@
-"""Album cover lookup chain for Spotify-sourced tracks.
+"""Album cover lookup: query every source in parallel, pick the biggest.
 
 Spotify's Web API caps album art at 640x640, which looks small on a 4K
-Frame TV. This module tries a sequence of higher-resolution sources and
-returns the first one that matches, falling through to Spotify's URL if
-nothing better is found.
+Frame TV. This module queries every known high-res source, measures the
+actual delivered image dimensions, and returns whichever URL resolves
+to the largest image.
 
-Chain order (best quality / coverage first):
-    1. iTunes Search API         — 3000x3000 via Apple Music CDN rewrite.
-                                   Great for mainstream releases.
-    2. MusicBrainz + Cover Art Archive
-                                 — user-curated scans, often 1500-3000+.
-                                   Best coverage for indie / obscure.
-    3. Deezer Search API         — up to 1000x1000. Covers mainstream
-                                   misses from iTunes (different catalog).
-    4. Spotify's 640x640         — caller's fallback, passed as `spotify_url`.
+Sources:
+    - iTunes Search API          — Apple Music CDN, upgradable to 3000x3000.
+    - MusicBrainz + Cover Art Archive
+                                 — user-curated scans (any size the
+                                   contributor uploaded; often 1500-3000+).
+    - Deezer Search API          — 1000x1000 via cover_xl.
+    - Spotify                    — caller's fallback (640x640 max).
 
-All lookups are stateless HTTP with short timeouts and no auth.
+All sources are stateless HTTP, no auth. We fetch each candidate image
+in parallel, read width/height via Pillow, and return the max-area URL.
 """
 
 import asyncio
+import io
 import logging
-import urllib.parse
 
 import aiohttp
+from PIL import Image, UnidentifiedImageError
 
 log = logging.getLogger("framedisplay")
 
@@ -34,7 +34,11 @@ DEEZER_SEARCH_URL = "https://api.deezer.com/search/album"
 # MusicBrainz requires a descriptive User-Agent with contact info.
 MB_USER_AGENT = "FrameDisplay/1.0 ( https://github.com/Jmetcalf26/frameDisplay )"
 
-_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=5)
+_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=8)
+# Measurement can involve downloading multi-megabyte originals (CAA
+# sometimes serves gatefold scans). Give it more room than the metadata
+# lookups above.
+_MEASURE_TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 
 async def find_best_cover(
@@ -43,39 +47,87 @@ async def find_best_cover(
     spotify_url: str | None,
     resolve_apple_cdn,
 ) -> str | None:
-    """Try each cover source in turn; return the first URL that matches.
+    """Query every source, measure each candidate, return the max-res URL.
 
     ``resolve_apple_cdn`` is a coroutine that upgrades an Apple Music CDN
-    URL (e.g. ``.../100x100bb.jpg``) to the largest available size. We
-    inject it rather than importing Recognizer here to avoid a circular
-    import.
+    URL (e.g. ``.../100x100bb.jpg``) to the largest available size. Passed
+    in rather than imported so this module stays decoupled from Recognizer.
     """
     if not album:
         return spotify_url
 
-    # 1. iTunes
-    itunes_url = await _itunes_lookup(artist, album)
+    # Kick off all three third-party lookups in parallel.
+    itunes_raw, caa_url, deezer_url = await asyncio.gather(
+        _itunes_lookup(artist, album),
+        _musicbrainz_caa_lookup(artist, album),
+        _deezer_lookup(artist, album),
+        return_exceptions=False,
+    )
+
+    # iTunes returns a 100x100 URL; upgrade to 3000x3000 via Apple CDN rewrite.
+    itunes_url = None
+    if itunes_raw:
+        itunes_url = await resolve_apple_cdn(itunes_raw)
+
+    candidates: list[tuple[str, str]] = []
     if itunes_url:
-        upgraded = await resolve_apple_cdn(itunes_url)
-        log.info("Cover source: iTunes (%s)", upgraded)
-        return upgraded
-
-    # 2. MusicBrainz + Cover Art Archive
-    caa_url = await _musicbrainz_caa_lookup(artist, album)
+        candidates.append(("iTunes", itunes_url))
     if caa_url:
-        log.info("Cover source: MusicBrainz/CAA (%s)", caa_url)
-        return caa_url
-
-    # 3. Deezer
-    deezer_url = await _deezer_lookup(artist, album)
+        candidates.append(("MB/CAA", caa_url))
     if deezer_url:
-        log.info("Cover source: Deezer (%s)", deezer_url)
-        return deezer_url
-
-    # 4. Fall back to whatever Spotify gave us.
+        candidates.append(("Deezer", deezer_url))
     if spotify_url:
-        log.info("Cover source: Spotify 640 fallback")
-    return spotify_url
+        candidates.append(("Spotify", spotify_url))
+
+    if not candidates:
+        return None
+
+    # Measure every candidate in parallel.
+    async with aiohttp.ClientSession(timeout=_MEASURE_TIMEOUT) as session:
+        sizes = await asyncio.gather(
+            *[_measure_image(session, url) for _, url in candidates]
+        )
+
+    best: tuple[str, str, tuple[int, int]] | None = None
+    for (label, url), dims in zip(candidates, sizes):
+        if dims is None:
+            log.info("Cover candidate %s: measurement failed (%s)", label, url)
+            continue
+        log.info("Cover candidate %s: %dx%d (%s)", label, dims[0], dims[1], url)
+        if best is None or (dims[0] * dims[1]) > (best[2][0] * best[2][1]):
+            best = (label, url, dims)
+
+    if best is None:
+        # Every measurement failed. Last-resort: prefer Spotify URL if we
+        # have one, otherwise the first candidate we found.
+        log.info("Cover: no candidate measurable; falling back blind")
+        for label, url in candidates:
+            if label == "Spotify":
+                return url
+        return candidates[0][1]
+
+    log.info(
+        "Cover winner: %s %dx%d (%s)",
+        best[0], best[2][0], best[2][1], best[1],
+    )
+    return best[1]
+
+
+async def _measure_image(session: aiohttp.ClientSession, url: str) -> tuple[int, int] | None:
+    """Fetch ``url`` and return its (width, height). Returns None on failure."""
+    try:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.read()
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        return None
+
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            return img.size
+    except (UnidentifiedImageError, OSError):
+        return None
 
 
 # ----- individual sources -----
@@ -110,10 +162,7 @@ async def _itunes_lookup(artist: str, album: str) -> str | None:
         )
 
     best = max(results, key=score)
-    # Only trust a match if at least the artist or album matches exactly;
-    # otherwise iTunes has guessed and we should try the next source.
     if score(best) == (0, 0):
-        log.info("iTunes: no confident match for '%s - %s'", artist, album)
         return None
     return best.get("artworkUrl100")
 
@@ -139,8 +188,6 @@ async def _musicbrainz_caa_lookup(artist: str, album: str) -> str | None:
     if not releases:
         return None
 
-    # Try releases in MB's relevance order; stop on the first that has art.
-    # Limit to top 5 already via ?limit=5. For each: HEAD the CAA front URL.
     async with aiohttp.ClientSession(timeout=_HTTP_TIMEOUT) as session:
         for release in releases:
             mbid = release.get("id")
@@ -193,5 +240,4 @@ async def _deezer_lookup(artist: str, album: str) -> str | None:
 
 def _mb_escape(s: str) -> str:
     """Escape characters that are special in MusicBrainz' Lucene query syntax."""
-    # Double quotes and backslashes are the important ones for our quoted terms.
     return s.replace("\\", "\\\\").replace('"', '\\"')
