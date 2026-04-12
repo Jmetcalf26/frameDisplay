@@ -352,6 +352,7 @@ class Composer:
         background: str = "black",
         font: str = "sans",
         genre_font: bool = False,
+        layout: str = "standard",
     ):
         orientation = orientation.lower()
         if orientation not in ("landscape", "portrait"):
@@ -373,6 +374,13 @@ class Composer:
         self.font_family = _validate_font_family(font)
         self.genre_font = genre_font
 
+        layout = (layout or "standard").lower()
+        if layout not in ("standard", "minimal"):
+            raise ValueError(
+                f"display.layout must be 'standard' or 'minimal' (got {layout!r})"
+            )
+        self.layout = layout
+
     def _resolve_font(self, track: TrackInfo) -> str:
         """Return the font family key to use for this track.
 
@@ -393,8 +401,12 @@ class Composer:
         # mixed in so toggling them produces fresh files instead of serving
         # stale ones.
         font_key = self._resolve_font(track)
+        # Font doesn't affect the minimal layout (no text), so omit it from
+        # the key there — keeps cached minimal files stable across font tweaks.
+        font_part = "none" if self.layout == "minimal" else font_key
         key_input = (
-            f"{track.display_key}|bg={self.background_key}|font={font_key}"
+            f"{track.display_key}|bg={self.background_key}"
+            f"|font={font_part}|layout={self.layout}"
         )
         key = hashlib.sha256(key_input.encode("utf-8")).hexdigest()[:16]
         return self.output_dir / f"{key}-{self.orientation}.jpg"
@@ -419,9 +431,14 @@ class Composer:
                 font_key,
             )
 
-        cover, cover_unpadded, bg = self._prepare_cover(cover_path, 1920)
+        # The minimal layout gives up the side-by-side text column, so the
+        # cover can grow to fill more of the canvas.
+        cover_size = 2000 if self.layout == "minimal" else 1920
+        cover, cover_unpadded, bg = self._prepare_cover(cover_path, cover_size)
 
-        if self.orientation == "landscape":
+        if self.layout == "minimal":
+            img = self._compose_minimal(cover, cover_unpadded, bg)
+        elif self.orientation == "landscape":
             img = self._compose_landscape(track, cover, cover_unpadded, bg, font_key)
         else:
             img = self._compose_portrait(track, cover, cover_unpadded, bg, font_key)
@@ -509,6 +526,21 @@ class Composer:
                   fill=title_color, anchor="mt")
         draw.text((center_x, text_top + title_h + gap), artist, font=artist_font,
                   fill=artist_color, anchor="mt")
+        return img
+
+    def _compose_minimal(
+        self,
+        cover: Image.Image,
+        cover_unpadded: Image.Image,
+        bg: tuple[int, int, int],
+    ) -> Image.Image:
+        """Center the album cover on the canvas with no text overlay."""
+        size = LANDSCAPE if self.orientation == "landscape" else PORTRAIT
+        img = self._make_canvas(size, cover_unpadded, bg)
+        w, h = size
+        cw = cover.width
+        ch = cover.height
+        img.paste(cover, ((w - cw) // 2, (h - ch) // 2))
         return img
 
     def _prepare_cover(

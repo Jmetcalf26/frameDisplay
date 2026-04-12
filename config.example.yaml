@@ -34,6 +34,10 @@ tv:
 
 display:
   orientation: "landscape"    # "landscape" or "portrait"
+  # Layout style:
+  #   "standard" — album art on one side, title + artist text on the other
+  #   "minimal"  — just the album art centered on the canvas, no text
+  layout: "standard"
   composed_dir: "cache/composed"  # where composed JPEGs are written/cached
   # Background behind the album art and text. One of:
   #   "black"      — solid black (default)

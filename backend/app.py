@@ -123,17 +123,20 @@ class FrameDisplayApp:
                 "display.genre_font requires Discogs to be enabled "
                 "(set discogs.enabled: true with valid credentials)"
             )
+        layout = display_cfg.get("layout", "standard")
         self.composer = Composer(
             orientation=self.orientation,
             output_dir=composed_dir,
             background=background,
             font=font,
             genre_font=genre_font,
+            layout=layout,
         )
         log.info(
-            "Composer: %s (%s, background=%s, font=%s, genre_font=%s)",
+            "Composer: %s (%s, layout=%s, background=%s, font=%s, genre_font=%s)",
             composed_dir,
             self.orientation,
+            layout,
             background,
             font,
             genre_font,
