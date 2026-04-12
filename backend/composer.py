@@ -65,6 +65,34 @@ def _fit_font(
     return _load_font(min_size)
 
 
+def _relative_luminance(rgb: tuple[int, int, int]) -> float:
+    """WCAG relative luminance for an sRGB color (0..1)."""
+
+    def lin(c: int) -> float:
+        x = c / 255.0
+        return x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4
+
+    r, g, b = rgb
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+
+
+def _text_colors_for(
+    bg: tuple[int, int, int],
+) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    """Pick (title, artist) text colors that contrast with ``bg``.
+
+    Restricted to a black/white pair (with a slightly muted secondary) so we
+    never end up with a clashy tinted title — just legible against whatever
+    background mode is in use. Threshold is the WCAG crossover where black
+    and white have equal contrast against ``bg``.
+    """
+    if _relative_luminance(bg) > 0.179:
+        # Light background → dark text.
+        return ((0, 0, 0), (60, 60, 60))
+    # Dark background → light text (matches the original styling).
+    return ((255, 255, 255), (200, 200, 200))
+
+
 def _parse_background(value) -> tuple[str, tuple[int, int, int] | None]:
     """Parse a display.background config value.
 
@@ -184,6 +212,8 @@ class Composer:
         artist_font = _load_font(100)
         artist = _truncate(draw, track.artist or "", artist_font, text_width)
 
+        title_color, artist_color = _text_colors_for(bg)
+
         t_bbox = draw.textbbox((0, 0), title, font=title_font)
         a_bbox = draw.textbbox((0, 0), artist, font=artist_font)
         title_h = t_bbox[3] - t_bbox[1]
@@ -192,8 +222,8 @@ class Composer:
         total_h = title_h + gap + artist_h
         top = (h - total_h) // 2
 
-        draw.text((text_x, top), title, font=title_font, fill=(255, 255, 255))
-        draw.text((text_x, top + title_h + gap), artist, font=artist_font, fill=(200, 200, 200))
+        draw.text((text_x, top), title, font=title_font, fill=title_color)
+        draw.text((text_x, top + title_h + gap), artist, font=artist_font, fill=artist_color)
         return img
 
     def _compose_portrait(
@@ -217,14 +247,16 @@ class Composer:
         artist_font = _load_font(120)
         artist = _truncate(draw, track.artist or "", artist_font, text_width)
 
+        title_color, artist_color = _text_colors_for(bg)
+
         t_bbox = draw.textbbox((0, 0), title, font=title_font)
         title_h = t_bbox[3] - t_bbox[1]
         gap = 80
 
         draw.text((center_x, text_top), title, font=title_font,
-                  fill=(255, 255, 255), anchor="mt")
+                  fill=title_color, anchor="mt")
         draw.text((center_x, text_top + title_h + gap), artist, font=artist_font,
-                  fill=(200, 200, 200), anchor="mt")
+                  fill=artist_color, anchor="mt")
         return img
 
     def _prepare_cover(
