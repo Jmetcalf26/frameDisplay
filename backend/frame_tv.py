@@ -80,6 +80,19 @@ class FrameTV:
     async def upload_and_display(self, image_path: pathlib.Path) -> None:
         """Upload the composed image and make it the active art."""
         async with self._lock:
+            # Close the art websocket before every upload so samsungtvws
+            # opens a fresh one on the next call. Long-lived sockets here
+            # go stale between uploads (the TV or an intermediate NAT drops
+            # them during idle periods) and surface as BrokenPipe on the
+            # next send. The retry in _call catches this, but reconnecting
+            # up front avoids the noisy warning + retry round trip on every
+            # upload. The cost is one extra websocket handshake per upload,
+            # which is trivial relative to the image transfer itself.
+            try:
+                await asyncio.to_thread(self._art.close)
+            except Exception:
+                log.debug("Frame TV pre-upload close failed", exc_info=True)
+
             try:
                 data = image_path.read_bytes()
             except OSError as e:
