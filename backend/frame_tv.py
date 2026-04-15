@@ -1,8 +1,10 @@
 import asyncio
 import logging
 import pathlib
+import uuid
 
 from samsungtvws import SamsungTVWS
+from samsungtvws.art.art import ArtChannelEmitCommand
 
 log = logging.getLogger("framedisplay")
 
@@ -102,6 +104,24 @@ class FrameTV:
                 timeout=self._CALL_TIMEOUT,
             )
 
+    def _fire_select_image(self, content_id: str) -> None:
+        """Send select_image without waiting for a response.
+
+        See the call site in upload_and_display for why we bypass the
+        library's select_image() — its _wait_for_d2d loop never matches
+        on this firmware. ``__name__`` is used in _call's log output.
+        """
+        req_id = str(uuid.uuid4())
+        payload = {
+            "request": "select_image",
+            "category_id": None,
+            "content_id": content_id,
+            "show": True,
+            "id": req_id,
+            "request_id": req_id,
+        }
+        self._art.send_command(ArtChannelEmitCommand.art_app_request(payload))
+
     async def upload_and_display(self, image_path: pathlib.Path) -> None:
         """Upload the composed image and make it the active art."""
         async with self._lock:
@@ -138,15 +158,17 @@ class FrameTV:
 
             log.info("Frame TV upload complete: content_id=%s", content_id)
 
-            # Once any _call in this sequence times out, the websocket is
-            # confused enough that subsequent calls are likely to hang too.
-            # Bail out early rather than burning _CALL_TIMEOUT per remaining
-            # call — the next upload will reconnect from scratch anyway.
+            # Fire-and-forget: samsungtvws' select_image goes through
+            # _wait_for_d2d, which blocks until it sees a D2D event whose
+            # request_id matches the one we sent. On this Frame firmware
+            # (4.3.4.0) the TV responds to select_image with a
+            # `recently_set_updated` event that carries no request_id at all,
+            # so the filter in _wait_for_d2d drops it and the call hangs
+            # forever. We don't need the ack — issue the raw ms.channel.emit
+            # and keep going. The image either appears on the TV or it
+            # doesn't; no amount of waiting changes that.
             try:
-                await self._call(self._art.select_image, content_id, None, True)
-            except asyncio.TimeoutError:
-                log.warning("Frame TV select_image timed out; bailing out of upload sequence")
-                return
+                await self._call(self._fire_select_image, content_id)
             except Exception:
                 log.exception("Frame TV select_image failed for %s", content_id)
                 return
