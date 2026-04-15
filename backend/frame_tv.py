@@ -55,13 +55,15 @@ class FrameTV:
         self._last_content_id: str | None = None
         self._lock = asyncio.Lock()
 
-    # Hard ceiling on any single samsungtvws call. select_image in
-    # particular can block forever waiting for a response event the TV
-    # never sends in a form the library recognizes — observed as a silent
-    # hang that wedges the whole listen loop. The timeout lets us abandon
-    # the call and keep processing; the dangling worker thread will finish
-    # or be cleaned up at process exit.
-    _CALL_TIMEOUT = 20.0
+    # Hard ceiling on any single samsungtvws call. The timeout is a safety
+    # net to keep the listen loop alive if a call goes rogue; it's not a
+    # tight SLA. Sized for the upload call specifically, which opens a
+    # secondary TLS socket to the TV and streams the raw JPEG — on a Pi
+    # over WiFi a 1.5+ MB image can legitimately take 10-20s. Everything
+    # else (get_artmode, fire-and-forget select_image / set_artmode) is a
+    # single WS frame and finishes in well under a second, so the generous
+    # ceiling doesn't cost us responsiveness in the common case.
+    _CALL_TIMEOUT = 60.0
 
     async def _call(self, fn, *args, **kwargs):
         """Run a sync samsungtvws call in a thread with a timeout, retrying
