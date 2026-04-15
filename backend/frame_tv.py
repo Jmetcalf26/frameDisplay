@@ -122,6 +122,24 @@ class FrameTV:
         }
         self._art.send_command(ArtChannelEmitCommand.art_app_request(payload))
 
+    def _fire_set_artmode(self, on: bool) -> None:
+        """Send set_artmode_status without waiting for a response.
+
+        Same quirk as select_image: the TV replies with a
+        `recently_set_updated` event that carries no `request_id`, so
+        samsungtvws' filter drops it and `_wait_for_d2d` blocks forever.
+        Observed on firmware 4.3.4.0 in both the no-op (already on) and
+        the real off->on transition cases.
+        """
+        req_id = str(uuid.uuid4())
+        payload = {
+            "request": "set_artmode_status",
+            "value": "on" if on else "off",
+            "id": req_id,
+            "request_id": req_id,
+        }
+        self._art.send_command(ArtChannelEmitCommand.art_app_request(payload))
+
     async def upload_and_display(self, image_path: pathlib.Path) -> None:
         """Upload the composed image and make it the active art."""
         async with self._lock:
@@ -188,10 +206,7 @@ class FrameTV:
                 current = None
             if artmode_ok and current != "on":
                 try:
-                    await self._call(self._art.set_artmode, True)
-                except asyncio.TimeoutError:
-                    log.warning("Frame TV set_artmode timed out; skipping cleanup")
-                    artmode_ok = False
+                    await self._call(self._fire_set_artmode, True)
                 except Exception:
                     log.exception("Frame TV set_artmode failed")
                     # Keep going — the image is selected even if the mode toggle failed.
